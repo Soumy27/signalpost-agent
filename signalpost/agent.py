@@ -61,6 +61,13 @@ def research_web(client, L, ctx, budget=16):
                           f"({prev.verification}); the last verified value is kept and marked stale.", checked=checked)
                 for s in ("social_profiles", "activity"):
                     L.section(s, "failed", "Website unreachable on this run.")
+            elif any(a.origin != "name_guess" and (a.verification in ("unreachable",) or a.verification.startswith(("http_429", "http_5")))
+                     for a in attempts):
+                bad = next(a for a in attempts if a.origin != "name_guess" and (a.verification == "unreachable" or a.verification.startswith(("http_429", "http_5"))))
+                L.section("website", "failed", f"The company's registered site {bad.url} was temporarily unavailable "
+                          f"({bad.verification.replace('_', ' ')}); website facts could not be checked on this run.", checked=checked)
+                for s in ("social_profiles", "activity"):
+                    L.section(s, "failed", "Website temporarily unavailable on this run.")
             elif not attempts:
                 L.section("website", "not_available", "No website in the register, no company e-mail domain and no plausible domain from the legal name.")
             elif any(a.verification == "blocked_by_robots_txt" and a.origin != "name_guess" for a in attempts) \

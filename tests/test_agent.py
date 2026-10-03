@@ -284,6 +284,17 @@ class RefreshTests(unittest.TestCase):
             self.assertEqual([c["change_type"] for c in ch], ["removed_website_description"])
 
 
+    def test_first_sighting_after_failed_check_is_not_a_change(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = store.Store(d)
+            L, _ = collect(routes())
+            L.section("website", "failed", "HTTP 429")
+            store.refresh(st, env_from(L), "r1", "2026-10-01T00:00:00Z")
+            L, _ = collect(routes())
+            self._site_claims(L)
+            self.assertEqual(store.refresh(st, env_from(L), "r2", "2026-10-02T00:00:00Z"), [])
+
+
 class BatchContractTests(unittest.TestCase):
     def test_one_terminal_envelope_per_input(self):
         r = routes()

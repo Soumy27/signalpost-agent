@@ -160,6 +160,7 @@ def refresh(store, env, run_id, now):
         env["claims"].append(carried)
         cur[key] = carried
 
+    cev = {e["id"]: e for e in env["evidence"]}
     if prev:
         for key in sorted(set(pclaims) | set(cur)):
             o, n = pclaims.get(key), cur.get(key)
@@ -173,6 +174,11 @@ def refresh(store, env, run_id, now):
             if kind_of(ov, nv) == "removed" and n is not None and n.get("stale"):
                 continue
             kind = "added" if ov is None else "removed" if nv is None else "changed"
+            psecs = prev.get("sections") or {}
+            ncls = _classes(n, cev) if n else set()
+            governing = "website" if "company_owned" in ncls else "jobs" if "public_api" in ncls else (n or o)["section"]
+            if kind == "added" and psecs.get(governing, {}).get("state") in ("failed", "blocked"):
+                continue  # first successful observation after an unchecked run is not a change
             ctype = _type(field, kind)
             label_o, label_n = (_label(o) if ov is not None else None), (_label(n) if nv is not None else None)
             desc = {"added": f"{field.replace('_', ' ')} added: {label_n}",
@@ -223,6 +229,7 @@ def refresh(store, env, run_id, now):
         "organisation_number": orgnr, "run_id": run_id, "completed_at": now,
         "first_seen_at": env["refresh"]["first_seen_at"], "check_count": env["refresh"]["check_count"],
         "claims": env["claims"], "evidence": env["evidence"], "first_seen": first_seen,
+        "sections": {k: {"state": (v or {}).get("state")} for k, v in (env.get("sections") or {}).items()},
         "claims_snapshot_sha256": snapshot, "change_log": hist[-500:],
     })
     return changes

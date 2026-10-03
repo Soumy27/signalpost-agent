@@ -150,6 +150,17 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
             results[o] = res
             if i % 50 == 0 or i == len(valid):
                 log(f"[official] {i}/{len(valid)}  requests={client.count}")
+    # one retry pass for companies whose register lookup failed transiently
+    retry = [o for o in valid if results[o][1].get("kind") in ("error",)]
+    if retry and client.time_left() > 120:
+        time.sleep(3)
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            for o, res in ex.map(p1, retry):
+                if res[1].get("kind") != "error":
+                    res[0].errors.insert(0, {"source": "official_registers", "url": None, "retryable": True,
+                                             "error": "first attempt failed; succeeded on retry"})
+                results[o] = res
+        log(f"[official] retried {len(retry)}: {sum(results[o][1].get('kind') != 'error' for o in retry)} recovered")
     _checkpoint(out, inputs, results, invalid, run_meta)
     ok = [o for o in valid if results[o][1].get("kind") in ("enhet", "underenhet")]
 

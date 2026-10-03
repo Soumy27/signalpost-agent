@@ -53,8 +53,8 @@ To refresh, run the same command again with the same `--out` (or `--state`). The
 | Envelopes | 100 / 100, validation passed | 100 / 100, validation passed |
 | Published claims | 7,846 | 7,846 |
 | Changes detected | – | 0 (no false changes) |
-| Requests | 684 | 675 |
-| Runtime | 130 s | 139 s |
+| Requests | 686 | 691 |
+| Runtime | 128 s | 138 s |
 | Third-party cost | $0 | $0 |
 
 Files: `envelopes.jsonl`, `run-report.json`, `refresh-run-report.json`, `requests.log.jsonl`, and the viewer `index.html` + `report-data.js`. To browse the viewer, open `index.html` from a local web server, for example `python3 -m http.server -d smoke`.

@@ -36,7 +36,7 @@ An earlier version showed 22 false changes on the same test. They came from run 
 
 ## Coverage and cost (100-company runs)
 
-Submitted smoke run (`smoke/run-report.json`): 100/100 envelopes, 7,846 published claims, 684 requests, 130 s, $0. The refresh run reported 0 changes. Section availability on the smoke set: identity, financials, leadership and locations 100 %, verified website 15 %, contact 40 %, group 9 % (all in-group companies), social profiles 9 %, hiring 4 %, dated activity 3 %. Typical figures from the validation set:
+Submitted smoke run (`smoke/run-report.json`): 100/100 envelopes, 7,846 published claims, 686 requests, 128 s, $0. The refresh run reported 0 changes. Section availability on the smoke set: identity, financials, leadership and locations 100 %, verified website 15 % (2 % `failed` because the registered site was rate-limited or down, reported honestly), contact 40 %, group 9 % (all in-group companies), social profiles 9 %, hiring 4 %, dated activity 3 %. Typical figures from the validation set:
 
 | Section | Available |
 |---|---|
@@ -50,6 +50,23 @@ Submitted smoke run (`smoke/run-report.json`): 100/100 envelopes, 7,846 publishe
 | hiring | depends on NAV ads by employer org. no.; see the smoke report |
 
 About 6–12 requests per company, 1.5–3 minutes per 100 companies, $0 third-party cost.
+
+## Scale test (1,000 companies, official batch size)
+
+A random sample of 1,000 companies from the universe (seed 31) was run with the default budgets (30,000 requests / 45 minutes).
+
+| Metric | Result |
+|---|---|
+| Envelopes | 1,000 / 1,000, validation passed |
+| Runtime | 851 s (14.2 min) |
+| Requests | 6,686 (6.7 per company); p50 1.05 s / p95 3.96 s per request |
+| Published claims | 77,265 |
+| Third-party cost | $0 |
+| Verified website / ambiguous (withheld) | 13.0 % / 13.9 % |
+| Contact, social, hiring, dated activity | 41.8 %, 6.6 %, 2.3 %, 2.4 % |
+| Group (companies the register marks as in a group) | 75 available, all others `not_applicable` |
+
+Four companies first came back `failed` because Brønnøysund reset connections under load. After this run, secondary register lookups were isolated per section, retries got exponential back-off, and a final retry pass was added. Re-running those four gave `available` for all of them.
 
 ## Tests
 

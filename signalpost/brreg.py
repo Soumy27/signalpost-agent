@@ -8,6 +8,7 @@ RR = "https://data.brreg.no/regnskapsregisteret/regnskap"
 
 
 def get_json(client, url, **kw):
+    kw.setdefault("retries", 4)  # the register occasionally resets connections under load
     r = client.get(url, **kw)
     data = None
     if r.status == 200:

@@ -18,6 +18,7 @@ import html as html_lib
 import json
 import re
 import socket
+import time
 import unicodedata
 import urllib.robotparser
 import xml.etree.ElementTree as ET
@@ -369,6 +370,13 @@ class Crawler:
         if not self.allowed(url):
             return "blocked", None
         r = self.get(url, timeout=timeout, retries=0, accept="text/html,application/xhtml+xml;q=0.9,*/*;q=0.5")
+        if r.status == 429 and self.used < self.cap:  # rate-limited: wait politely, retry once
+            try:
+                wait = float(r.headers.get("Retry-After") or r.headers.get("retry-after") or 3)
+            except ValueError:
+                wait = 3
+            time.sleep(max(1.0, min(5.0, wait)))
+            r = self.get(url, timeout=timeout, retries=0, accept="text/html,application/xhtml+xml;q=0.9,*/*;q=0.5")
         ctype = (r.headers.get("Content-Type") or r.headers.get("content-type") or "").lower()
         if r.status >= 400 or ("html" not in ctype and "xml" not in ctype and ctype):
             return f"http_{r.status}", r

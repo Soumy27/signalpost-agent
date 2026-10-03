@@ -242,7 +242,31 @@ def collect(client, L, orgnr, bulk=None):
     if kind == "deleted":
         L.section("financials", "not_applicable", "Entity is deleted from the register.")
 
-    # roles
+    _guard(L, "leadership", "brreg_roles", _roles, client, L, orgnr, ctx)
+    if kind == "deleted":
+        return ctx
+    _guard(L, "locations", "brreg_subunits", _subunits, client, L, orgnr, ctx)
+    _guard(L, "financials", "brreg_accounts", _accounts_module, client, L, orgnr, ctx)
+    if ctx["in_group"]:
+        _guard(L, "group", "brreg_group", _group_module, client, L, orgnr, ctx)
+    else:
+        L.section("group", "not_applicable", "The register does not mark this entity as part of a group (erIKonsern=false).")
+    return ctx
+
+
+def _guard(L, section, source, fn, *args):
+    """A failing secondary lookup fails only its own section, never the company."""
+    from .http import BudgetExceeded
+    try:
+        fn(*args)
+    except BudgetExceeded:
+        raise
+    except Exception as e:
+        L.section(section, "failed", f"{source} lookup failed: {type(e).__name__}", force=True)
+        L.error(source, f"{type(e).__name__}: {e}")
+
+
+def _roles(client, L, orgnr, ctx):
     rr, roles = brreg.fetch_roles(client, orgnr)
     if roles is None:
         if rr.status in (404, 410):
@@ -280,35 +304,35 @@ def collect(client, L, orgnr, bulk=None):
         if not any(c["section"] == "leadership" for c in L.claims):
             L.section("leadership", "not_available", "No current role holders are registered.", checked=[rr.url])
 
-    if kind == "deleted":
-        return ctx
 
-    # subunits / registered workplaces
+
+def _subunits(client, L, orgnr, ctx):
     sr, subs = brreg.fetch_subunits(client, orgnr)
     if subs is None:
         L.section("locations", "failed", f"Subunit search returned HTTP {sr.status}.")
         L.error("brreg_subunits", f"HTTP {sr.status}", sr.url)
-    else:
-        total = (subs.get("page") or {}).get("totalElements", 0)
-        L.claim("locations", "registered_workplace_count", total, [L.json_evidence(sr, subs, "/page/totalElements", REG)])
-        for i, u in enumerate((subs.get("_embedded") or {}).get("underenheter", [])):
-            if u.get("overordnetEnhet") != orgnr:
-                continue
-            ctx["subunit_orgnrs"].add(u.get("organisasjonsnummer"))
-            if u.get("navn"):
-                ctx["names"].append(u["navn"])
-            a = _addr(u.get("beliggenhetsadresse"))
-            L.claim("locations", "registered_workplace", {
-                "orgnr": u.get("organisasjonsnummer"), "name": u.get("navn"), "address": a["text"] if a else None,
-                "municipality": (u.get("beliggenhetsadresse") or {}).get("kommune"),
-                "employees": u.get("antallAnsatte") if u.get("harRegistrertAntallAnsatte") is not False else None,
-                "industry": (u.get("naeringskode1") or {}).get("beskrivelse"),
-                "start_date": _d(u.get("oppstartsdato")),
-            }, [L.json_evidence(sr, subs, f"/_embedded/underenheter/{i}", REG)], key=u.get("organisasjonsnummer"))
-        if total == 0:
-            L.section("locations", "available")
+        return
+    total = (subs.get("page") or {}).get("totalElements", 0)
+    L.claim("locations", "registered_workplace_count", total, [L.json_evidence(sr, subs, "/page/totalElements", REG)])
+    for i, u in enumerate((subs.get("_embedded") or {}).get("underenheter", [])):
+        if u.get("overordnetEnhet") != orgnr:
+            continue
+        ctx["subunit_orgnrs"].add(u.get("organisasjonsnummer"))
+        if u.get("navn"):
+            ctx["names"].append(u["navn"])
+        a = _addr(u.get("beliggenhetsadresse"))
+        L.claim("locations", "registered_workplace", {
+            "orgnr": u.get("organisasjonsnummer"), "name": u.get("navn"), "address": a["text"] if a else None,
+            "municipality": (u.get("beliggenhetsadresse") or {}).get("kommune"),
+            "employees": u.get("antallAnsatte") if u.get("harRegistrertAntallAnsatte") is not False else None,
+            "industry": (u.get("naeringskode1") or {}).get("beskrivelse"),
+            "start_date": _d(u.get("oppstartsdato")),
+        }, [L.json_evidence(sr, subs, f"/_embedded/underenheter/{i}", REG)], key=u.get("organisasjonsnummer"))
+    if total == 0:
+        L.section("locations", "available")
 
-    # annual accounts
+
+def _accounts_module(client, L, orgnr, ctx):
     ar, accounts = brreg.fetch_accounts(client, orgnr)
     if accounts is None and ar.status == 404:
         L.section("financials", "not_available",
@@ -321,17 +345,14 @@ def collect(client, L, orgnr, bulk=None):
         rows = accounts if isinstance(accounts, list) else [accounts]
         _accounts(L, ar, accounts, rows, orgnr, ctx)
 
-    # group structure
-    if ctx["in_group"]:
-        gr, tree = brreg.fetch_group(client, orgnr)
-        if tree is None:
-            L.section("group", "not_available" if gr.status == 404 else "failed",
-                      f"Group structure endpoint returned HTTP {gr.status}.", checked=[gr.url])
-        else:
-            _group(L, gr, tree, orgnr)
+
+def _group_module(client, L, orgnr, ctx):
+    gr, tree = brreg.fetch_group(client, orgnr)
+    if tree is None:
+        L.section("group", "not_available" if gr.status == 404 else "failed",
+                  f"Group structure endpoint returned HTTP {gr.status}.", checked=[gr.url])
     else:
-        L.section("group", "not_applicable", "The register does not mark this entity as part of a group (erIKonsern=false).")
-    return ctx
+        _group(L, gr, tree, orgnr)
 
 
 def _accounts(L, ar, raw, rows, orgnr, ctx):

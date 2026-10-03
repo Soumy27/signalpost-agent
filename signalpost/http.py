@@ -167,7 +167,7 @@ class Client:
                 with self._lock:
                     self.log.append((url, f"error:{type(e).__name__}"))
                 if attempt < retries:
-                    time.sleep(0.5 * (attempt + 1))
+                    time.sleep(min(8, 0.5 * 2 ** attempt))
                 continue
             resp.elapsed_ms = int((time.monotonic() - t0) * 1000)
             with self._lock:
