@@ -1,0 +1,97 @@
+{
+  "run_id": "smoke-001",
+  "agent_version": "2.0.0",
+  "started_at": "2026-10-03T19:34:07Z",
+  "completed_at": "2026-10-03T19:36:17Z",
+  "expected_count": 100,
+  "emitted_envelopes": 100,
+  "states": {
+    "available": 100
+  },
+  "section_states": {
+    "identity": {
+      "available": 100
+    },
+    "financials": {
+      "available": 100
+    },
+    "leadership": {
+      "available": 100
+    },
+    "locations": {
+      "available": 100
+    },
+    "group": {
+      "not_applicable": 91,
+      "available": 9
+    },
+    "website": {
+      "not_available": 74,
+      "available": 15,
+      "ambiguous": 11
+    },
+    "social_profiles": {
+      "not_available": 91,
+      "available": 9
+    },
+    "contact": {
+      "available": 40,
+      "not_available": 60
+    },
+    "jobs": {
+      "not_available": 96,
+      "available": 4
+    },
+    "activity": {
+      "not_available": 97,
+      "available": 3
+    }
+  },
+  "published_claims": 7846,
+  "claims_by_section": {
+    "identity": 2420,
+    "contact": 89,
+    "leadership": 462,
+    "locations": 219,
+    "financials": 4562,
+    "website": 30,
+    "social_profiles": 13,
+    "jobs": 9,
+    "activity": 17,
+    "group": 25
+  },
+  "changes_detected": 0,
+  "operations": {
+    "requests": 684,
+    "request_budget": 3000,
+    "time_budget_minutes": 45,
+    "bytes": 15251247,
+    "runtime_seconds": 130.3,
+    "p50_request_ms": 1141,
+    "p95_request_ms": 3597,
+    "p50_company_ms": 8218,
+    "p95_company_ms": 24100,
+    "third_party_cost_usd": 0.0,
+    "cost_per_company_usd": 0.0
+  },
+  "job_feed": {
+    "pages": 1,
+    "status": "complete",
+    "synced_until": "2026-10-03T20:35:24.731771+02:00",
+    "active_ads": 9607,
+    "details_fetched": 1,
+    "ads_without_orgnr": 0
+  },
+  "validation": {
+    "passed": true,
+    "checks": {
+      "exact_expected_count": true,
+      "unique_organisation_numbers": true,
+      "all_states_valid": true,
+      "all_section_states_valid": true,
+      "every_published_claim_has_evidence": true,
+      "evidence_has_hash_and_time": true
+    },
+    "unsupported_claims": 0
+  }
+}

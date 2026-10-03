@@ -1,120 +1,85 @@
-"""Brønnøysundregistrene open data APIs (no key required, NLOD licence).
+"""Brønnøysundregistrene open data (NLOD 2.0, no key).
 
-- Enhetsregisteret:   https://data.brreg.no/enhetsregisteret/api/docs/index.html
-- Regnskapsregisteret: https://data.brreg.no/regnskapsregisteret/regnskap/{orgnr}
+Enhetsregisteret: https://data.brreg.no/enhetsregisteret/api/dokumentasjon/en/index.html
+Regnskapsregisteret: https://data.brreg.no/regnskapsregisteret/regnskap/{orgnr}
 """
-from datetime import datetime, timezone
-
 ER = "https://data.brreg.no/enhetsregisteret/api"
 RR = "https://data.brreg.no/regnskapsregisteret/regnskap"
 
-SOURCE_NAMES = {
-    "brreg_entity": "Brønnøysundregistrene – Enhetsregisteret (enhet)",
-    "brreg_subunit": "Brønnøysundregistrene – Enhetsregisteret (underenhet)",
-    "brreg_parent": "Brønnøysundregistrene – Enhetsregisteret (overordnet enhet)",
-    "brreg_roles": "Brønnøysundregistrene – Enhetsregisteret (roller)",
-    "brreg_subunits": "Brønnøysundregistrene – Enhetsregisteret (underenheter-søk)",
-    "brreg_accounts": "Brønnøysundregistrene – Regnskapsregisteret",
-}
 
-
-def now_iso():
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def _source(sid, resp, url=None):
-    return {
-        "id": sid,
-        "name": SOURCE_NAMES[sid],
-        "url": url or resp.url,
-        "http_status": resp.status,
-        "retrieved_at": now_iso(),
-    }
+def get_json(client, url, **kw):
+    r = client.get(url, **kw)
+    data = None
+    if r.status == 200:
+        try:
+            data = r.json()
+        except ValueError:
+            data = None
+    return r, data
 
 
 def fetch_entity(client, orgnr):
-    """Returns (kind, data, source). kind: enhet | underenhet | deleted | not_found."""
-    r = client.get(f"{ER}/enheter/{orgnr}")
-    if r.status == 200:
-        data = r.json()
-        kind = "deleted" if data.get("respons_klasse") == "SlettetEnhet" or data.get("slettedato") else "enhet"
-        return kind, data, _source("brreg_entity", r)
+    """(kind, data, response); kind: enhet | underenhet | deleted | not_found."""
+    r, data = get_json(client, f"{ER}/enheter/{orgnr}")
+    if data is not None:
+        deleted = data.get("respons_klasse") == "SlettetEnhet" or data.get("slettedato")
+        return ("deleted" if deleted else "enhet"), data, r
     if r.status == 410:
-        return "deleted", {"organisasjonsnummer": orgnr}, _source("brreg_entity", r)
+        return "deleted", {"organisasjonsnummer": orgnr}, r
     if r.status != 404:
-        raise RuntimeError(f"Enhetsregisteret returned HTTP {r.status} for {orgnr}")
-    r2 = client.get(f"{ER}/underenheter/{orgnr}")
-    if r2.status == 200:
-        data = r2.json()
-        if data.get("respons_klasse", "").startswith("Slettet") or data.get("slettedato"):
-            return "deleted", data, _source("brreg_subunit", r2)
-        return "underenhet", data, _source("brreg_subunit", r2)
+        raise RuntimeError(f"Enhetsregisteret HTTP {r.status}")
+    r2, data2 = get_json(client, f"{ER}/underenheter/{orgnr}")
+    if data2 is not None:
+        deleted = str(data2.get("respons_klasse", "")).startswith("Slettet") or data2.get("slettedato")
+        return ("deleted" if deleted else "underenhet"), data2, r2
     if r2.status == 410:
-        return "deleted", {"organisasjonsnummer": orgnr}, _source("brreg_subunit", r2)
-    return "not_found", None, _source("brreg_entity", r)
-
-
-def fetch_parent(client, orgnr):
-    r = client.get(f"{ER}/enheter/{orgnr}")
-    if r.status != 200:
-        return None, None
-    return r.json(), _source("brreg_parent", r)
+        return "deleted", {"organisasjonsnummer": orgnr}, r2
+    return "not_found", None, r
 
 
 def fetch_roles(client, orgnr):
-    r = client.get(f"{ER}/enheter/{orgnr}/roller")
-    if r.status != 200:
-        return None, _source("brreg_roles", r)
-    return r.json(), _source("brreg_roles", r)
+    return get_json(client, f"{ER}/enheter/{orgnr}/roller")
 
 
-def fetch_subunits(client, orgnr, size=20):
-    url = f"{ER}/underenheter?overordnetEnhet={orgnr}&size={size}"
-    r = client.get(url)
-    if r.status != 200:
-        return None, _source("brreg_subunits", r)
-    return r.json(), _source("brreg_subunits", r)
+def fetch_subunits(client, orgnr, size=50):
+    return get_json(client, f"{ER}/underenheter?overordnetEnhet={orgnr}&size={size}")
 
 
 def fetch_accounts(client, orgnr):
-    r = client.get(f"{RR}/{orgnr}")
-    if r.status == 404:
-        return [], _source("brreg_accounts", r)
-    if r.status != 200:
-        return None, _source("brreg_accounts", r)
-    data = r.json()
-    return (data if isinstance(data, list) else [data]), _source("brreg_accounts", r)
+    return get_json(client, f"{RR}/{orgnr}")
 
 
-# ---- change feeds (used by `refresh`) -------------------------------------------------
+def fetch_group(client, orgnr):
+    return get_json(client, f"{ER}/konsernstruktur/{orgnr}")
+
+
+def fetch_parent(client, orgnr):
+    return get_json(client, f"{ER}/enheter/{orgnr}")
+
+
+# ---- change feeds (used to decide which stored profiles to re-check) ----------------
 
 def changed_entities_since(client, since_iso, max_pages=50):
-    """orgnr -> latest change type from the Enhetsregisteret update feed."""
     changed = {}
     url = f"{ER}/oppdateringer/enheter?dato={since_iso}&size=10000"
     for _ in range(max_pages):
-        r = client.get(url, timeout=60, max_bytes=50_000_000)
-        if r.status != 200:
+        r, data = get_json(client, url, timeout=60, max_bytes=50_000_000)
+        if data is None:
             break
-        items = r.json().get("_embedded", {}).get("oppdaterteEnheter", [])
+        items = data.get("_embedded", {}).get("oppdaterteEnheter", [])
         for item in items:
             changed[item["organisasjonsnummer"]] = item.get("endringstype")
         if len(items) < 10000:
             break
-        # page by update id rather than page number (deep paging is capped)
         url = f"{ER}/oppdateringer/enheter?oppdateringsid={items[-1]['oppdateringsid'] + 1}&size=10000"
     return changed
 
 
 def changed_roles_since(client, since_iso, max_pages=50):
-    changed = set()
-    after_id = None
+    changed, after_id = set(), None
     for _ in range(max_pages):
-        url = f"{ER}/oppdateringer/roller?size=10000&" + (f"afterId={after_id}" if after_id else f"afterTime={since_iso}")
-        r = client.get(url, timeout=60, max_bytes=50_000_000)
-        if r.status != 200:
-            break
-        events = r.json()
+        q = f"afterId={after_id}" if after_id else f"afterTime={since_iso}"
+        r, events = get_json(client, f"{ER}/oppdateringer/roller?size=10000&{q}", timeout=60, max_bytes=50_000_000)
         if not events:
             break
         for ev in events:
@@ -124,3 +89,65 @@ def changed_roles_since(client, since_iso, max_pages=50):
             break
     changed.discard(None)
     return changed
+
+
+# ---- frozen registry snapshot (optional identity fallback) ---------------------------
+
+BULK_URL = "https://data.brreg.no/enhetsregisteret/api/enheter/lastned/csv"
+
+
+def _nest(row):
+    out = {}
+    for k, v in row.items():
+        if k is None or v in (None, ""):
+            continue
+        if v in ("true", "false"):
+            v = v == "true"
+        elif k in ("antallAnsatte", "kapital.antallAksjer"):
+            v = int(float(v)) if v.replace(".", "", 1).isdigit() else v
+        elif k == "kapital.belop":
+            try:
+                v = float(v)
+            except ValueError:
+                pass
+        parts = k.split(".")
+        node = out
+        for p in parts[:-1]:
+            node = node.setdefault(p, {})
+        node[parts[-1]] = v
+    for a in ("forretningsadresse", "postadresse"):
+        if isinstance(out.get(a), dict) and isinstance(out[a].get("adresse"), str):
+            out[a]["adresse"] = [x.strip() for x in out[a]["adresse"].split("\n") if x.strip()]
+    for k in ("vedtektsfestetFormaal", "aktivitet"):
+        if isinstance(out.get(k), str):
+            out[k] = [out[k]]
+    for k in ("registreringsdatoenhetsregisteret", "registreringsdatoantallansatteNAVAaregisteret"):
+        if k in out:
+            out[{"registreringsdatoenhetsregisteret": "registreringsdatoEnhetsregisteret",
+                 "registreringsdatoantallansatteNAVAaregisteret": "registreringsdatoAntallAnsatteNAVAaregisteret"}[k]] = out.pop(k)
+    return out
+
+
+def load_bulk(path, orgnrs):
+    """Rows for the requested organisation numbers from a Brreg CSV snapshot
+    (.csv or .csv.gz). Returns (rows_by_orgnr, snapshot_sha256)."""
+    import csv
+    import gzip
+    import hashlib
+    wanted, rows = set(orgnrs), {}
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8-sig", newline="") as f:
+        sample = f.read(8192)
+        f.seek(0)
+        dialect = csv.Sniffer().sniff(sample, delimiters=";,\t")
+        for row in csv.DictReader(f, dialect=dialect):
+            o = (row.get("organisasjonsnummer") or "").strip()
+            if o in wanted:
+                rows[o] = _nest(row)
+                if len(rows) == len(wanted):
+                    break
+    return rows, h.hexdigest()

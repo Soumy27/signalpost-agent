@@ -1,0 +1,15 @@
+[project]
+name = "signalpost-agent"
+version = "2.0.0"
+description = "Norwegian company research agent: one evidence-backed envelope per organisation number"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+signalpost = "signalpost.__main__:main"
+
+[tool.setuptools]
+packages = ["signalpost"]
+
+[tool.setuptools.package-data]
+signalpost = ["data/*.jsonl.gz", "data/*.json"]

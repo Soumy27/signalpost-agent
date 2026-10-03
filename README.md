@@ -1,113 +1,120 @@
-# Signalpost Company Agent
+# Signalpost company agent
 
-Give it a Norwegian organisation number. It looks the company up in permitted public sources and returns a profile where **every fact carries its source URL, retrieval time and the source's own date**, together with a plain-English summary. Profiles are stored and re-checked, and every change is recorded.
+Give it Norwegian organisation numbers. For each one it researches permitted public sources and returns **exactly one terminal envelope**. The envelope holds the legal identity, claims, claim-level evidence, availability states, source snapshots, refresh metadata, errors and a plain-language summary.
 
-- **No API keys, no LLM, no paid services.** It uses Python 3.9+ and the standard library only.
-- **Identity-safe.** A fact is published only if the organisation number in the source response matches the one requested. Website content is published only when the organisation number or the company's distinctive name appears on the site.
-- **No fabricated numbers.** Financial figures are copied as filed from Regnskapsregisteret, with currency, period and statement type (company vs group). The only derived number is a revenue-change percentage, and it is labelled as derived.
+- **Exact identity first.** Every published fact is tied to the organisation number. Register data is matched by org. no. in the response. Website content is published only after the site resolves to the exact legal entity (see [docs/IDENTITY_RESOLUTION.md](docs/IDENTITY_RESOLUTION.md)). Uncertain matches are reported as `ambiguous` and nothing from them is published.
+- **Evidence on every claim.** Each claim records the source URL, final URL and redirect chain, retrieval time, SHA-256 of the captured body, the exact JSON pointer or text span, the extraction method and, where relevant, the reporting period. Raw bodies are kept as immutable snapshots under `out/snapshots/`.
+- **No fabricated numbers.** Financial values are copied as filed from Regnskapsregisteret, with currency, scope (company or group) and period. A missing value is an explicit `not_available`, never a zero.
+- **Refresh as a diff.** Re-runs emit typed changes (`new_role`, `new_filing`, `new_job`, `closed_job`, `changed_registered_business_address`, …). Each change carries the previous value, the previous evidence and the current evidence. Re-running the same snapshot is idempotent.
+- **No paid services, no keys, no LLM.** It uses Python 3.9+ and the standard library only, and the third-party cost is $0.
 
-## The one command
+## Setup and the evaluator command
+
+There are no dependencies and no install step (`pip install .` is optional). The one command:
 
 ```bash
-python3 -m signalpost run companies.txt --export jsonl
+python3 -m signalpost run batch.jsonl --out out
 ```
 
-`companies.txt` holds organisation numbers, one per line (spaces, `NO … MVA`, commas and CSV columns are tolerated). The output goes to:
+`batch.jsonl` holds one `{"organisation_number": "123456789"}` per line. JSON arrays, CSV and plain-text lists also work. The command exits 0 when the output passes the contract validation.
 
-| Path | Contents |
+| Output | Contents |
 |---|---|
-| `data/profiles/<orgnr>.json` | one profile per company, including its change history |
-| `data/profiles.jsonl` | all profiles from this run (`--export csv` gives a flat CSV instead) |
-| `data/last_run.json` | run report: duration, request count, outcomes, cost |
-| `data/last_run_requests.json` | audit log of every outbound request and its HTTP status |
+| `out/envelopes.jsonl` | one terminal envelope per input, in input order |
+| `out/run-report.json` | counts, availability states per section, requests, bytes, p50/p95 latency, runtime, cost, validation checks |
+| `out/index.html` + `report-data.js` | responsive viewer to search, filter, compare and verify every fact on desktop or mobile |
+| `out/state/` | refresh state: previous claims and evidence, change log, job-feed index |
+| `out/snapshots/` | gzip-compressed raw responses, named by their SHA-256 |
+| `out/requests.log.jsonl` | every outbound request and its status |
+| `out/envelopes.checkpoint.jsonl` | provisional envelopes written after the register phase (crash safety) |
+
+If Builderr supplies its frozen registry snapshot, pass it with `--bulk brreg-enheter.csv[.gz]`. It is optional: the live register is always tried first, and the snapshot is only used to anchor identity for a company whose live lookup fails, with the snapshot's SHA-256 recorded as evidence.
+
+Budgets come from `--max-requests` / `--minutes`, or from the environment variables `SIGNALPOST_MAX_REQUESTS` and `SIGNALPOST_MAX_MINUTES`. The defaults are 30 requests per company (minimum 2,000) and 45 minutes. The run stops early enough to always write every envelope.
 
 Other commands:
 
 ```bash
-python3 -m signalpost lookup 923609016          # one company, JSON to stdout
-python3 -m signalpost refresh                   # re-check stored profiles that changed upstream
-python3 -m signalpost sample 1000 > list.txt    # random registered companies
-python3 -m signalpost export --format csv       # dump the whole store
-python3 -m unittest discover tests              # offline tests
+python3 -m signalpost lookup 923609016                                      # one company, envelope to stdout
+python3 -m signalpost sample 100 --universe signalpost-company-universe-2025.jsonl.gz > smoke.jsonl
+python3 -m signalpost validate out/envelopes.jsonl --expected 100           # contract check
+python3 -m signalpost changed --out out                                     # stored companies changed upstream
+python3 -m unittest discover tests                                          # offline tests
 ```
 
-## Sources (all open, public, no login)
+To refresh, run the same command again with the same `--out` (or `--state`). The previous state is read from there.
 
-| Source | Endpoint | What it provides |
+## Smoke test
+
+[`smoke/`](smoke/) holds the 100-company smoke test. The companies were sampled at random from Builderr's public universe (`smoke/smoke-companies.jsonl`, seed 2026).
+
+| | First run | Refresh run |
 |---|---|---|
-| Enhetsregisteret (entity) | `data.brreg.no/enhetsregisteret/api/enheter/{orgnr}` | name, legal form, status (active/bankrupt/liquidation/deleted), founding and registration dates, addresses, NACE codes, sector, employees, website, e-mail, phone, share capital, purpose, VAT and other registrations, former names, group flag |
-| Enhetsregisteret (sub-unit) | `…/underenheter/{orgnr}` | used when the number is a branch or location; the parent entity is resolved too |
-| Enhetsregisteret (roles) | `…/enheter/{orgnr}/roller` | CEO, board chair and members, deputies, auditor, accountant, owner (ENK), partners, signature and procuration |
-| Enhetsregisteret (sub-units) | `…/underenheter?overordnetEnhet={orgnr}` | number and list of branches |
-| Regnskapsregisteret | `data.brreg.no/regnskapsregisteret/regnskap/{orgnr}` | latest and previous filed annual accounts (company and group): revenue, operating profit, profit before tax, net profit, assets, equity, liabilities, cash, payroll; audit status |
-| Company website | homepage of the registered site, or the domain of the registered non-free-mail e-mail | identity check, title, description, social profiles; `robots.txt` is always honoured |
-| Update feeds | `…/oppdateringer/enheter`, `…/oppdateringer/roller` | used by `refresh` to find which stored companies changed |
+| Envelopes | 100 / 100, validation passed | 100 / 100, validation passed |
+| Published claims | 7,846 | 7,846 |
+| Changes detected | – | 0 (no false changes) |
+| Requests | 684 | 675 |
+| Runtime | 130 s | 139 s |
+| Third-party cost | $0 | $0 |
 
-Brreg data is published under the Norwegian Licence for Open Government Data (NLOD). Birth dates of role holders are deliberately **not** stored.
+Files: `envelopes.jsonl`, `run-report.json`, `refresh-run-report.json`, `requests.log.jsonl`, and the viewer `index.html` + `report-data.js`. To browse the viewer, open `index.html` from a local web server, for example `python3 -m http.server -d smoke`.
 
-## Profile format
+## Envelope (abridged)
 
 ```jsonc
 {
-  "orgnr": "997874234",
-  "lookup_result": "enhet",          // enhet | underenhet | deleted | not_found | identity_mismatch
-  "summary": "ANNI&CO AS (org. no. 997874234) is a private limited company based in Ullensaker, ...",
-  "facts": {
-    "chief_executive": {
-      "value": {"name": "…", "type": "person", "role_code": "DAGL", "role": "Daglig leder"},
-      "source": "brreg_roles",        // key into "sources"
-      "as_of": "2020-11-02",          // date given by the source itself
-      "observed_since": "2026-10-03T12:00:00+00:00"
-    },
-    "financials": {
-      "value": {"fiscal_year": 2025, "currency": "NOK", "statement_type": "SELSKAP",
-                "figures": {"revenue": 11200000.0, "net_profit": 368000.0, "...": "..."}},
-      "source": "brreg_accounts", "as_of": "2025-12-31"
-    }
-  },
-  "sources": {"brreg_roles": {"url": "https://data.brreg.no/…/roller", "http_status": 200, "retrieved_at": "…"}},
-  "identity_checks": [{"source": "brreg_entity", "method": "orgnr_exact_match", "match": true}],
-  "notes": ["Plain-language explanations of gaps, e.g. why no accounts exist"],
-  "history": {"first_seen": "…", "last_checked": "…", "last_changed": "…",
-              "changes": [{"field": "employees", "old": 7, "new": 9, "detected_at": "…"}]}
+  "organisation_number": "997874234",
+  "state": "available",                       // available | not_available | blocked | not_applicable | ambiguous | failed
+  "run": {"run_id": "…", "started_at": "…", "completed_at": "…", "terminal_status": "completed"},
+  "legal_identity": {"legal_name": "ANNI&CO AS", "legal_form": {…}, "registry_status": "active", …},
+  "summary": {"text": "…", "sentences": [{"topic": "financials", "text": "…", "supporting_claims": ["cl-41", …]}], "unknowns": […]},
+  "sections": {"website": {"state": "available"}, "jobs": {"state": "not_available", "reason": "…", "sources_checked": […]}, …},
+  "claims": [{"id": "cl-7", "key": "chief_executive:kari nordmann", "section": "leadership", "field": "chief_executive",
+              "value": {"name": "Kari Nordmann", "role": "Daglig leder"}, "availability": "available", "confidence": 1.0,
+              "evidence_ids": ["ev-7"], "effective_date": "2020-01-01", "first_observed_at": "…", "last_observed_at": "…"}],
+  "evidence": [{"id": "ev-7", "source_url": "https://data.brreg.no/enhetsregisteret/api/enheter/997874234/roller",
+                "source_class": "official_registry", "retrieved_at": "…", "content_sha256": "…",
+                "claim_span": "/rollegrupper/0/roller/0/person/navn = {…}", "extraction_method": "json_pointer"}],
+  "changes": [{"change_type": "new_role", "previous_value": null, "current_value": {…}, "previous_evidence": […], …}],
+  "errors": [],
+  "operations": {"requests": 11, "runtime_ms": 8120, "third_party_cost_usd": 0}
 }
 ```
 
-## Keeping profiles current
+The full schema is in [docs/DATA_SCHEMA.md](docs/DATA_SCHEMA.md).
 
-- Each re-run compares new facts with the stored ones. Changed values are written to `history.changes` with old value, new value and detection time, and `observed_since` shows how long each value has been unchanged.
-- `refresh` reads Brreg's entity and role update feeds since the last refresh and re-checks only the stored companies that changed. It also re-checks profiles older than `--stale-days` (default 30), because accounts have no feed.
-- If a website is temporarily unreachable, the last verified value is kept and marked `"stale": true` rather than reported as removed.
+## What a profile covers
 
-## Limits and cost
-
-The daily test is 100 companies, a 45-minute limit, 2,000 outbound requests and $10.
-
-| | Typical for 100 companies | Enforced cap |
+| Section | Sources | Examples |
 |---|---|---|
-| Outbound requests (every retry and `robots.txt` counted) | ~450 | `--max-requests 2000` |
-| Wall time | ~2–3 min | `--minutes 45` (stops 60 s early) |
-| External API cost | **$0.00** (no paid APIs, no LLM) | – |
+| Legal identity and brand | Enhetsregisteret, verified site | name, form, status, dates, addresses, NACE, employees, share capital, purpose, former names, public brand, self-description |
+| Annual accounts | Regnskapsregisteret | revenue, operating profit, profit before tax, net profit, assets, equity, liabilities, cash and payroll, for company and group, latest and previous year, with periods |
+| Leadership | Enhetsregisteret roles | CEO, chair, board, deputies, auditor, accountant, owner, signatories (birth dates are discarded) |
+| Locations | subunits, site structured data | registered workplaces with address, employees and industry |
+| Group | konsernstruktur | parent, ultimate parent, subsidiaries, group size |
+| Website | registry URL, e-mail domain, job-ad homepage, name-derived domains | verified official site with identity proof |
+| Social profiles | links and `sameAs` on the verified site | LinkedIn, Facebook, Instagram, YouTube, X, TikTok |
+| Contact | register, verified site | phone, e-mail |
+| Hiring | NAV job feed (exact employer org. no.), verified site | active ads with title, dates, location, link; careers page and portal |
+| Dated activity | verified site RSS/Atom, WordPress posts, dated news lists, JSON-LD articles | dated items from the last two years |
 
-Requests are spent in two phases. The register-based core profile is built first for every company (about 4–5 requests each). Website verification then uses whatever budget is left. A tight budget therefore reduces website coverage but never accuracy.
+## Models, APIs, licences and cost
 
-## Model / API details (for submission)
+- **Models:** none. Extraction, identity resolution and summaries are deterministic.
+- **APIs:**
+  - Brønnøysundregistrene Enhetsregisteret and Regnskapsregisteret: open data under NLOD 2.0, no key.
+  - NAV arbeidsplassen public job-vacancy feed: read with the public token NAV publishes, and declared as a cache (see [docs/CRAWLERS.md](docs/CRAWLERS.md)).
+  - Statistics Norway KLASS: English industry names (CC BY 4.0), bundled as a static table.
+  - Company-owned websites: `robots.txt` is honoured and access is limited to a few targeted pages.
+- **Secrets:** none required.
+- **Expected cost per official run:** $0 third-party cost. A typical run makes about 6–12 requests per company.
 
-- **Model:** none. The extraction, identity matching and explanations are deterministic code, so results are reproducible and no values can be hallucinated.
-- **APIs:** Brønnøysundregistrene open data APIs (free, no key) and plain HTTPS GETs of company homepages.
-- **Expected run cost:** $0 per daily run.
+## Documentation
 
-## Layout
-
-```
-signalpost/
-  __main__.py   CLI (run, lookup, refresh, sample, export)
-  runner.py     batch runner with request/time budget
-  http.py       budgeted HTTP client (counts every request)
-  brreg.py      Enhetsregisteret, Regnskapsregisteret and update feeds
-  website.py    robots-aware homepage check and identity verification
-  profile.py    facts, evidence, identity checks, plain-English summary
-  store.py      per-company JSON store with change history
-  orgnr.py      MOD11 validation
-tests/          offline unit tests
-```
+- [docs/AGENT.md](docs/AGENT.md): research and abstention policy
+- [docs/IDENTITY_RESOLUTION.md](docs/IDENTITY_RESOLUTION.md): candidate generation and publication gates
+- [docs/DATA_SCHEMA.md](docs/DATA_SCHEMA.md): envelopes, claims, evidence and states
+- [docs/REFRESH.md](docs/REFRESH.md): snapshots, diffs, idempotency and stale values
+- [docs/CRAWLERS.md](docs/CRAWLERS.md): sources, rights, budgets and fallbacks
+- [docs/EVAL.md](docs/EVAL.md): how it was measured
+- [docs/LIMITATIONS.md](docs/LIMITATIONS.md): known gaps
