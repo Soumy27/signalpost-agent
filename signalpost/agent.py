@@ -101,13 +101,21 @@ def research_jobs(client, L, ctx, index, max_details=6):
     cc = CompanyClient(client)
     allowed = {ctx["orgnr"]} | set(ctx.get("subunit_orgnrs") or ())
     names = [n for n in [ctx.get("name"), ctx.get("brand")] + list(ctx.get("names") or [])[1:6] if n]
-    found = 0
+    found = unreachable = 0
     try:
         exact = ctx.get("nav_ads") or []
         cands = (exact + [a for a in index.candidates(names) if a not in exact])[:max_details + len(exact[:10])]
         for ad in cands[:16]:
-            r, d = index.detail(cc, ad["uuid"])
+            try:
+                r, d = index.detail(cc, ad["uuid"])
+            except BudgetExceeded:
+                raise
+            except Exception:
+                unreachable += 1
+                continue
             if not d:
+                if r.status not in (404, 410):
+                    unreachable += 1
                 continue
             a = d.get("ad_content") or {}
             emp = a.get("employer") or {}
@@ -139,6 +147,9 @@ def research_jobs(client, L, ctx, index, max_details=6):
         L.claim("jobs", "active_job_ads", found, [c["evidence_ids"][0] for c in L.claims if c["field"] == "job_posting"
                                                  and c["value"].get("source") == "arbeidsplassen.nav.no"][:1],
                 note="Active ads on arbeidsplassen.nav.no whose employer org. no. is this company or its subunit")
+    elif unreachable and "jobs" not in L.sections:
+        L.section("jobs", "failed", f"NAV's job feed did not respond for {unreachable} candidate ad(s) for this employer; "
+                  "hiring could not be checked on this run.")
     elif "jobs" not in L.sections:
         info = index.sync_info
         L.section("jobs", "not_available",

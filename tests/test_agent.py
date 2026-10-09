@@ -212,6 +212,28 @@ def env_from(L):
     return {"organisation_number": ORG, "claims": L.claims, "evidence": L.evidence, "sections": dict(L.sections)}
 
 
+class JobFeedTests(unittest.TestCase):
+    def test_network_error_keeps_partial_sync(self):
+        from signalpost.jobs import FEED, JobIndex
+        page = {"items": [{"id": f"u{i}", "date_modified": f"2026-10-0{1 + i // 600}T00:00:00+00:00",
+                           "_feed_entry": {"uuid": f"u{i}", "status": "ACTIVE", "businessName": "X AS"}} for i in range(1000)],
+                "next_url": "/api/v1/feed/next"}
+
+        class Flaky(FakeClient):
+            def get(self, url, **kw):
+                if url.endswith("/next"):
+                    raise TimeoutError("read timed out")
+                return super().get(url, **kw)
+        with tempfile.TemporaryDirectory() as d:
+            idx = JobIndex(Path(d) / "missing.jsonl.gz")
+            idx.ads, idx.synced_until = {}, "2026-10-01T00:00:00+00:00"
+            c = Flaky({f"{FEED}/api/publicToken": (200, "token eyJabc.def.ghi"), f"{FEED}/api/v1/feed": (200, page)})
+            info = idx.sync(c)
+            self.assertTrue(info["status"].startswith("partial_network_error"))
+            self.assertEqual(len(idx.ads), 1000)
+            self.assertEqual(idx.synced_until, "2026-10-02T00:00:00+00:00")
+
+
 class RefreshTests(unittest.TestCase):
     def test_idempotent_and_typed_changes(self):
         with tempfile.TemporaryDirectory() as d:

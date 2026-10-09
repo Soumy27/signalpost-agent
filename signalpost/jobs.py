@@ -69,7 +69,7 @@ class JobIndex:
 
     def token(self, client):
         if not self._token:
-            r = client.get(f"{FEED}/api/publicToken", accept="text/plain", retries=1)
+            r = client.get(f"{FEED}/api/publicToken", accept="text/plain", retries=2, timeout=60)  # can be slow
             m = re.search(r"eyJ[\w.-]+", r.text())
             if not m:
                 raise RuntimeError("NAV public token unavailable")
@@ -80,10 +80,10 @@ class JobIndex:
         """Pull feed pages modified since the last sync (incremental)."""
         start = self.synced_until or (datetime.now(timezone.utc) - timedelta(days=bootstrap_days)).isoformat()
         since = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
-        hdr = {"Authorization": f"Bearer {self.token(client)}", "If-Modified-Since": format_datetime(since, usegmt=True)}
         url = f"{FEED}/api/v1/feed"
         pages = 0
         try:
+            hdr = {"Authorization": f"Bearer {self.token(client)}", "If-Modified-Since": format_datetime(since, usegmt=True)}
             while pages < max_pages:
                 if stop_seconds is not None and client.time_left() < stop_seconds:
                     self.sync_info["status"] = "partial_time_budget"
@@ -114,6 +114,8 @@ class JobIndex:
                 hdr = {"Authorization": hdr["Authorization"]}
         except BudgetExceeded:
             self.sync_info["status"] = "partial_request_budget"
+        except Exception as e:  # network trouble: keep what was synced so far
+            self.sync_info["status"] = f"partial_network_error: {type(e).__name__}"
         self.sync_info.update(pages=pages, synced_until=self.synced_until,
                               active_ads=sum(1 for a in self.ads.values() if a.get("status") == "ACTIVE"))
         self._by_name = None
