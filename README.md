@@ -1,5 +1,7 @@
 # Signalpost company agent
 
+**Live viewer (smoke-test results): https://soumy27.github.io/signalpost-agent/**. Find a company, check where every fact came from, and compare two side by side, on desktop or phone.
+
 Give it Norwegian organisation numbers. For each one it researches permitted public sources and returns **exactly one terminal envelope**. The envelope holds the legal identity, claims, claim-level evidence, availability states, source snapshots, refresh metadata, errors and a plain-language summary.
 
 - **Exact identity first.** Every published fact is tied to the organisation number. Register data is matched by org. no. in the response. Website content is published only after the site resolves to the exact legal entity (see [docs/IDENTITY_RESOLUTION.md](docs/IDENTITY_RESOLUTION.md)). Uncertain matches are reported as `ambiguous` and nothing from them is published.
@@ -46,18 +48,23 @@ To refresh, run the same command again with the same `--out` (or `--state`). The
 
 ## Smoke test
 
-[`smoke/`](smoke/) holds the 100-company smoke test. The companies were sampled at random from Builderr's public universe (`smoke/smoke-companies.jsonl`, seed 2026).
+[`smoke/`](smoke/) holds the 100-company smoke test. The companies were sampled at random from Builderr's public universe (`smoke/smoke-companies.jsonl`, seed 2026). See `smoke/run-report.json` (first run) and `smoke/refresh-run-report.json` (an immediate re-run, which must report zero false changes). The same results are published as the live viewer linked above.
 
-| | First run | Refresh run |
-|---|---|---|
-| Envelopes | 100 / 100, validation passed | 100 / 100, validation passed |
-| Published claims | 7,846 | 7,846 |
-| Changes detected | – | 0 (no false changes) |
-| Requests | 686 | 691 |
-| Runtime | 128 s | 138 s |
-| Third-party cost | $0 | $0 |
+## What changed in version 2.1 (after the first scored round)
 
-Files: `envelopes.jsonl`, `run-report.json`, `refresh-run-report.json`, `requests.log.jsonl`, and the viewer `index.html` + `report-data.js`. To browse the viewer, open `index.html` from a local web server, for example `python3 -m http.server -d smoke`.
+- **Precision:**
+  - Guessed non-`.no` domains need the org. no. on the site.
+  - Corroboration reads only visible text and `tel:`/`mailto:` links.
+  - Every descriptive word of the legal name must match, so group sites no longer verify subsidiaries.
+  - Social handles must name the company, and vendor template accounts are rejected.
+  - Webmail and login pages, and the shared domain of platform profile pages, are excluded.
+  - Spam-compromised blogs publish no activity.
+  - Only plausible Norwegian phone numbers are kept.
+- **Synthesis:** `summary` is a plain-text paragraph with numbered citations, and `synthesis` adds what the company does, what changed (or "first observation") and what remains unknown, each with sources.
+- **UX:** a redesigned viewer for find, verify and compare, published with GitHub Pages.
+- **Recall:** open job ads are read from recruitment portals linked from verified sites, there are more domain candidates, and the full legal name with its legal form counts as corroboration. The job-feed catch-up no longer delays the website phase and has a hard time cap.
+
+See [docs/EVAL.md](docs/EVAL.md) for the measurements.
 
 ## Envelope (abridged)
 

@@ -146,3 +146,87 @@ def build(claims, sections, changes, ctx):
                       "text": "Not established: " + "; ".join(f"{u['title'].lower()} ({u['state'].replace('_', ' ')})" for u in unknowns) + "."})
     return {"text": " ".join(p["text"] for p in parts), "sentences": parts, "unknowns": unknowns,
             "changes": change_text}
+
+
+def attach(env, built):
+    """Write the synthesis onto the envelope in two forms:
+
+    * `summary`   - one plain-text paragraph with numbered source citations, e.g. "... revenue NOK 11.2 m [2]".
+    * `synthesis` - the same content structured: what the company does, what changed, what remains
+                    unknown, and a numbered source list (URL, source name, retrieval time) for every conclusion.
+    """
+    claims = {c["id"]: c for c in env.get("claims", [])}
+    evidence = {e["id"]: e for e in env.get("evidence", [])}
+    sources, index = [], {}
+
+    def cite(claim_ids):
+        nums = []
+        for cid in claim_ids:
+            for eid in (claims.get(cid) or {}).get("evidence_ids", []):
+                ev = evidence.get(eid)
+                if not ev:
+                    continue
+                url = ev.get("final_url") or ev.get("source_url")
+                if url not in index:
+                    index[url] = len(sources) + 1
+                    sources.append({"n": index[url], "url": url, "source_name": ev.get("source_name"),
+                                    "retrieved_at": ev.get("retrieved_at")})
+                if index[url] not in nums:
+                    nums.append(index[url])
+        return sorted(nums)
+
+    sentences = []
+    for s in built.get("sentences", []):
+        nums = cite(s.get("supporting_claims") or [])
+        text = s["text"].rstrip()
+        if nums:
+            text = text.rstrip(".") + " " + "".join(f"[{n}]" for n in nums) + "."
+        sentences.append({**s, "text": text, "sources": nums})
+
+    ref = env.get("refresh") or {}
+    changes = env.get("changes") or []
+    if changes:
+        changed = {"status": "changed", "text": "Changes since the previous check on "
+                   f"{(ref.get('previous_completed_at') or '')[:10]}: " + "; ".join(c["description"] for c in changes[:8]) + ".",
+                   "changes": [{"type": c["change_type"], "description": c["description"], "materiality": c["materiality"],
+                                "sources": cite([x for x in [next((cl["id"] for cl in env["claims"] if cl["key"] == c["claim_key"]), None)] if x])}
+                               for c in changes]}
+    elif ref.get("previous_completed_at"):
+        changed = {"status": "unchanged", "changes": [],
+                   "text": f"No material changes since the previous check on {ref['previous_completed_at'][:10]}."}
+    else:
+        changed = {"status": "first_observation", "changes": [],
+                   "text": f"First observation ({(env.get('run') or {}).get('completed_at', '')[:10]}); there is no earlier "
+                           "snapshot to compare, so no changes can be reported yet."}
+    if not any(s.get("topic") == "changes" for s in sentences):
+        sentences.insert(max(0, len(sentences) - (1 if sentences and sentences[-1].get("topic") == "unknowns" else 0)),
+                         {"topic": "changes", "text": changed["text"], "supporting_claims": [], "sources": []})
+
+    by_topic = {}
+    for s in sentences:
+        by_topic.setdefault(s["topic"], []).append(s)
+
+    def join(*topics):
+        ss = [s for t in topics for s in by_topic.get(t, [])]
+        return {"text": " ".join(s["text"] for s in ss), "sources": sorted({n for s in ss for n in s["sources"]})} if ss else None
+
+    unknowns = built.get("unknowns") or []
+    env["summary"] = " ".join(s["text"] for s in sentences) or built.get("text") or ""
+    env["synthesis"] = {
+        "what_it_does": join("identity", "business", "status"),
+        "people": join("people"),
+        "financials": join("financials"),
+        "group_and_locations": join("group", "locations"),
+        "online_presence": join("online"),
+        "hiring": join("hiring"),
+        "public_activity": join("activity"),
+        "what_changed": changed,
+        "what_remains_unknown": {
+            "text": "; ".join(f"{u['title']}: {u['state'].replace('_', ' ')}" + (f" ({u['reason']})" if u.get("reason") else "")
+                              for u in unknowns) or "Nothing material; every section was established.",
+            "items": unknowns,
+        },
+        "sentences": sentences,
+        "sources": sources,
+        "method": "Deterministic synthesis from published claims only; every sentence cites the evidence it rests on.",
+    }

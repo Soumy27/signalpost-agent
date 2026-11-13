@@ -8,6 +8,23 @@ All sets are random samples from Builderr's public universe (`signalpost-company
 | validation | 99 | precision audit and refresh false-change test, run once per change |
 | smoke | 2026 | the submitted 100-company smoke test (`smoke/`) |
 
+## Round 2 (after the 13 November scored run)
+
+Builderr's 500-company run of the first submission scored 41.06 (recall 17.86, evidence 22.60, synthesis 0.00, UX 0.60). 46 of 61 checked claims were correct; 15 were about a different company. Changes made in response:
+
+| Finding | Cause | Fix (with regression test) |
+|---|---|---|
+| `isabellacafe.com` (a US restaurant) published for *Isabella Cafe AS*, Ringerike | a guessed `.com` domain accepted on a name match; corroboration also scanned raw HTML, where any 8-digit run can match a phone number | guessed non-`.no` domains need the org. no. on the site; corroboration reads only visible text and `tel:`/`mailto:` links, with digit boundaries |
+| `twitter.com/squarespace` for *Løwehjerte Design AS* | a Squarespace template's JSON-LD `sameAs` was trusted | a handle must name the company or its verified brand; vendor/platform accounts are always rejected |
+| group site published for a subsidiary (audit: *Head Energy Consulting AS* → `head.energy`) | descriptive words such as *consulting* were ignored in name matching | every name token except legal suffixes and stop words must match (country qualifiers may be absent only on the company's own registered site) |
+| casino spam from a hacked WordPress site published as company news (audit) | feed items were not screened | a site whose feed contains spam or foreign-script posts publishes no activity |
+| concatenated template phone numbers (audit) | `tel:` links taken as-is | only plausible Norwegian numbers, in canonical `+47` form |
+| synthesis scored 0 | the summary was a nested object | `summary` is now a plain-text paragraph with numbered citations; `synthesis` gives what the company does, what changed and what remains unknown, each with sources |
+| UX scored 0.6 | no hosted viewer | the viewer is published with GitHub Pages and redesigned around *find a company, check a source, compare two*, on desktop and phone |
+| no verified job postings or news linked from company sites | only job-detail URLs on the company domain were used | recruitment portals linked from a verified site are read for their open ads; the job-feed catch-up no longer delays the website phase and has a hard time cap |
+
+A new 300-company audit (seed 1113) after these fixes: 37 verified websites, every one checked by hand against the live site and correct. The two sites the stricter rules dropped were a group site and a registry-listed site missing its country qualifier (now accepted for registry-listed sites only).
+
 ## Precision audit (validation set, 100 companies)
 
 Every website-derived publication was checked by hand against the live site.
@@ -36,7 +53,7 @@ An earlier version showed 22 false changes on the same test. They came from run 
 
 ## Coverage and cost (100-company runs)
 
-Submitted smoke run (`smoke/run-report.json`): 100/100 envelopes, 7,846 published claims, 686 requests, 128 s, $0. The refresh run reported 0 changes. Section availability on the smoke set: identity, financials, leadership and locations 100 %, verified website 15 % (2 % `failed` because the registered site was rate-limited or down, reported honestly), contact 40 %, group 9 % (all in-group companies), social profiles 9 %, hiring 4 %, dated activity 3 %. Typical figures from the validation set:
+Submitted smoke run, version 2.1 (`smoke/run-report.json`): 100/100 envelopes, 7,819 published claims, 1,592 requests (including the job-feed catch-up), 226 s, $0. The immediate refresh run (`smoke/refresh-run-report.json`) reported 0 changes. Section availability: identity, financials, leadership and locations 100 %, verified website 12 %, contact 39 %, group 10 % (all in-group companies), social profiles 5 %, hiring 2 %, dated activity 3 %. These are lower than in version 2.0 by design: the stricter identity rules withhold anything that cannot be tied to the exact company. Typical figures from the validation set:
 
 | Section | Available |
 |---|---|

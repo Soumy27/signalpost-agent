@@ -94,6 +94,7 @@ def envelope(orgnr, L, ctx, run_meta, raw_input=None):
         "run": {**run_meta, "terminal_status": "completed" if state != "failed" else "failed"},
         "legal_identity": ident,
         "summary": None,
+        "synthesis": None,
         "sections": {k: L.sections.get(k) for k, _ in SECTIONS},
         "claims": L.claims,
         "evidence": L.evidence,
@@ -135,8 +136,11 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
 
     # the job-feed sync runs alongside the official phase
     index = JobIndex(store.dir / "nav_jobs_index.jsonl.gz")
+    cached_by_orgnr = {k: list(v) for k, v in index.by_orgnr_map().items()}  # snapshot before the live sync mutates it
     pool = ThreadPoolExecutor(max_workers=1)
-    sync_future = pool.submit(_sync_jobs, client, index, safety, max_requests) if jobs else None
+    # the live job-feed work gets a hard time slice so it never holds up the run
+    job_deadline = time.monotonic() + min(12 * 60, minutes * 60 * 0.3)
+    sync_future = pool.submit(_sync_jobs, client, index, safety, max_requests, job_deadline) if jobs else None
 
     # phase 1: official registers
     def p1(o):
@@ -164,20 +168,13 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
     _checkpoint(out, inputs, results, invalid, run_meta)
     ok = [o for o in valid if results[o][1].get("kind") in ("enhet", "underenhet")]
 
-    # phase 2: exact job-ad matches by employer org. no. (also yields homepage candidates)
-    if sync_future:
-        info = sync_future.result()
-        log(f"[jobs] NAV feed index: {info}")
-        try:
-            index.save()
-        except OSError as e:
-            log(f"[jobs] could not save index: {e}")
+    # phase 2: employer homepages from cached job ads (exact employer org. no.) become website candidates;
+    # the live sync keeps running in the background and is only awaited before the job phase
+    if jobs:
         for o in ok:
             ctx = results[o][1]
-            ads = index.by_orgnr({o} | set(ctx.get("subunit_orgnrs") or ()))
-            ctx["nav_ads"] = ads
+            ads = [a for k in {o} | set(ctx.get("subunit_orgnrs") or ()) for a in cached_by_orgnr.get(k, [])]
             ctx["employer_homepages"] = list(dict.fromkeys(a["homepage"] for a in ads if a.get("homepage")))[:2]
-    pool.shutdown()
 
     # phase 3: website discovery + verified-site crawl
     if web:
@@ -196,6 +193,17 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
                     log(f"[web] {i}/{len(ok)}  requests={client.count}")
 
     # phase 4: job-ad claims (live re-fetch of matched ads for fresh evidence)
+    if sync_future:
+        info = sync_future.result()
+        log(f"[jobs] NAV feed index: {info}")
+        try:
+            index.save()
+        except OSError as e:
+            log(f"[jobs] could not save index: {e}")
+        for o in ok:
+            ctx = results[o][1]
+            ctx["nav_ads"] = index.by_orgnr({o} | set(ctx.get("subunit_orgnrs") or ()))
+    pool.shutdown()
     if jobs:
         def p4(o):
             L, ctx = results[o]
@@ -217,19 +225,21 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
                 L = Ledger(o)
                 L.error("input", f"Invalid Norwegian organisation number: {raw!r}", retryable=False)
                 env = envelope(o, L, {"kind": "invalid"}, run_meta, raw_input=raw)
-                env["summary"] = {"text": "Input is not a valid Norwegian organisation number (9 digits, MOD11).",
-                                  "sentences": [], "unknowns": [], "changes": []}
+                summary.attach(env, {"text": "Input is not a valid Norwegian organisation number (9 digits, MOD11).",
+                                     "sentences": [{"topic": "identity", "text": "Input is not a valid Norwegian organisation "
+                                                    "number (9 digits, MOD11).", "supporting_claims": []}], "unknowns": []})
             else:
                 L, ctx = results[o]
                 env = envelope(o, L, ctx, run_meta)
                 if env["claims"]:
                     refresh(store, env, run_id, completed)
-                env["summary"] = summary.build(env["claims"], env["sections"], env["changes"], {"orgnr": o, **ctx})
+                summary.attach(env, summary.build(env["claims"], env["sections"], env["changes"], {"orgnr": o, **ctx}))
         except Exception as e:  # never drop a company
             L = Ledger(o)
             L.error("assembly", f"{type(e).__name__}: {e}", retryable=True)
             env = envelope(o, L, {"kind": "error"}, run_meta)
-            env["summary"] = {"text": "Profile assembly failed; see errors.", "sentences": [], "unknowns": [], "changes": []}
+            summary.attach(env, {"text": "Profile assembly failed; see errors.", "unknowns": [],
+                                 "sentences": [{"topic": "identity", "text": "Profile assembly failed; see errors.", "supporting_claims": []}]})
         envelopes.append(env)
     _write_jsonl(out / "envelopes.jsonl", envelopes)
 
@@ -244,13 +254,13 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
     return envelopes, rep
 
 
-def _sync_jobs(client, index, safety, max_requests):
+def _sync_jobs(client, index, safety, max_requests, deadline=None):
     """Incremental feed sync, then learn employer org. numbers for new ads.
-    Bounded to a share of the run budget so research is never starved."""
+    Bounded by a hard deadline and a share of the request budget."""
     try:
-        index.sync(client, stop_seconds=safety + 300)
-        index.enrich(client, max_requests=int(max_requests * 0.3), workers=6,
-                     stop_seconds=max(safety + 300, client.time_left() * 0.6))
+        index.sync(client, stop_seconds=safety + 300, deadline=deadline)
+        index.enrich(client, max_requests=int(max_requests * 0.3), workers=8,
+                     stop_seconds=safety + 300, deadline=deadline)
     except Exception as e:
         index.sync_info["status"] = f"failed: {type(e).__name__}"
     return index.sync_info

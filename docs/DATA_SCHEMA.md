@@ -8,7 +8,8 @@
 | `state` | enum | `available` (identity established), `not_available` (number not in the register), `failed` (invalid input, register mismatch or error). `blocked`, `not_applicable` and `ambiguous` are used at section level |
 | `run` | object | `run_id`, `started_at`, `completed_at`, `agent_version`, `terminal_status` |
 | `legal_identity` | object | convenience copy of the core identity claims (name, form, status, address, municipality, industry, brand, dates, employees) |
-| `summary` | object | `text`, `sentences[]` (each with `topic`, `text` and `supporting_claims` ids), `unknowns[]`, `changes[]` |
+| `summary` | string | plain-text synthesis with numbered source citations, e.g. "… revenue NOK 11.2 m [4]." Covers what the company does, people, accounts, group and locations, online presence, hiring, dated activity, **what changed** (or that this is a first observation), and **what remains unknown** |
+| `synthesis` | object | the same content structured: `what_it_does`, `people`, `financials`, `group_and_locations`, `online_presence`, `hiring`, `public_activity` (each `{text, sources}`), `what_changed` (`status`: `first_observation`, `unchanged` or `changed`, with the typed `changes`), `what_remains_unknown` (`text` and `items` per section with state and reason), `sentences[]` (`topic`, `text`, `supporting_claims`, `sources`) and `sources[]` (`n`, `url`, `source_name`, `retrieved_at`) |
 | `sections` | object | one entry per section: `identity`, `financials`, `leadership`, `locations`, `group`, `website`, `social_profiles`, `contact`, `jobs`, `activity`. Each has `state`, plus `reason` and `sources_checked` when not available |
 | `claims` | array | see below |
 | `evidence` | array | see below |

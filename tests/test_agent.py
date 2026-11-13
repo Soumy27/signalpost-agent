@@ -184,6 +184,70 @@ class WebsiteTests(unittest.TestCase):
         s = crawl({"https://anniogco.no": (200, home.replace("</p>", " Ring oss på 63 96 57 30</p>"))}, origin="name_guess")
         self.assertGreaterEqual(s.score, 0.9)
 
+    def test_parent_brand_site_rejected(self):
+        # "Head Energy" (group) must not verify "Head Energy Consulting AS": descriptive words must match too
+        ctx = dict(CTX, name="HEAD ENERGY CONSULTING AS", phones=[], emails=[], people=[])
+        home = "<title>Head Energy Norge | Et unikt posisjonert ingeniørselskap</title><p>" + "Vi leverer prosjekter og rådgivning. " * 6 + "</p>"
+        with mock.patch.object(website, "resolves", return_value=True):
+            cr = website.Crawler(FakeClient({"https://head.energy": (200, home)}), ctx, 20)
+            s = cr.try_site("https://head.energy", "registry_email_domain")
+        self.assertLess(s.score, 0.9)
+
+    def test_guessed_foreign_domain_needs_orgnr(self):
+        home = "<title>Anni &amp; Co</title><p>Welcome to our cafe. Call 63 96 57 30 for a table. " * 4 + "</p>"
+        s = crawl({"https://anniogco.com": (200, home)}, origin="name_guess", url="https://anniogco.com")
+        self.assertLess(s.score, 0.9)
+
+    def test_phone_and_social_hygiene(self):
+        self.assertIsNone(website.norwegian_phone("+4720926209420760"))
+        self.assertIsNone(website.norwegian_phone("1234567890"))
+        self.assertEqual(website.norwegian_phone("0047 32 08 72 20"), "+4732087220")
+        self.assertEqual(website._social("https://www.facebook.com/firma/videos/123")[1], "https://www.facebook.com/firma")
+        self.assertFalse(website._handle_matches("squarespace", website.tokens("LØWEHJERTE DESIGN AS"), []))
+        self.assertFalse(website._handle_matches("squarespace", website.tokens("SQUARE SPACE DESIGN AS"), ["squarespace"]))
+
+    def test_spam_feed_is_not_company_activity(self):
+        self.assertTrue(website.SPAM.search("Best New Online Casino: Regulation and Licensing"))
+        self.assertTrue(website.NON_LATIN.search("10 советов по ставкам"))
+        self.assertFalse(website.SPAM.search("Betongarbeid og nytt slott i Bergen"))
+
+    def test_full_legal_name_corroborates_guessed_no_domain(self):
+        ctx = dict(CTX, name="MALESERVICE NORD AS", phones=[], emails=[], people=[],
+                   address={"adresse": ["Storgata 9"], "postnummer": "9008", "poststed": "TROMSØ"})
+        home = "<title>Maleservice Nord</title><p>" + "Vi maler hus og leiligheter. " * 6 + "</p><footer>© 2026 Maleservice Nord AS</footer>"
+        with mock.patch.object(website, "resolves", return_value=True):
+            cr = website.Crawler(FakeClient({"https://maleservicenord.no": (200, home)}), ctx, 20)
+            s = cr.try_site("https://maleservicenord.no", "name_guess")
+        self.assertGreaterEqual(s.score, 0.9)
+        # without the legal form it stays unpublished
+        with mock.patch.object(website, "resolves", return_value=True):
+            cr = website.Crawler(FakeClient({"https://maleservicenord.no": (200, home.replace("Nord AS", "Nord"))}), ctx, 20)
+            s = cr.try_site("https://maleservicenord.no", "name_guess")
+        self.assertLess(s.score, 0.9)
+
+    def test_webmail_login_is_not_a_website(self):
+        page = "<title>Henes :: Welcome to Roundcube Webmail</title><p>Username Password Login</p>"
+        ctx = dict(CTX, name="HENES AS")
+        with mock.patch.object(website, "resolves", return_value=True):
+            cr = website.Crawler(FakeClient({"https://henes.no/roundcube/": (200, page)}), ctx, 20)
+            s = cr.try_site("https://henes.no/roundcube/", "registry_email_domain")
+        self.assertLess(s.score, 0.9)
+
+    def test_platform_profile_publishes_no_platform_contacts(self):
+        L = Ledger(ORG)
+        html = ('<title>Kjelsås Bilverksted | Sjekkpunkt</title><p>Org.nr 997 874 234</p>'
+                '<a href="mailto:hei@sjekkpunkt.no">hei@sjekkpunkt.no</a><a href="tel:+4767104300">67 10 43 00</a>'
+                '<a href="https://www.facebook.com/sjekkpunkt">Facebook</a>')
+        resp = Response("https://sjekkpunkt.no/bilverksted/kjelsaasbilverksted", 200, html.encode(),
+                        "https://sjekkpunkt.no/bilverksted/kjelsaasbilverksted", {"Content-Type": "text/html"})
+        site = website.SiteResult(resp.url, "registry")
+        site.pages, site.score, site.verification = [("homepage", resp, website.parse(resp))], 1.0, "orgnr_on_site"
+        site.proof = (resp, "Org.nr 997 874 234", "orgnr_regex_visible_text")
+        website.extract(L, site, dict(CTX, name="KJELSÅS BILVERKSTED AS", emails=[]))
+        fields = {c["field"] for c in L.claims}
+        self.assertIn("official_website", fields)
+        self.assertFalse(fields & {"website_email", "website_phone", "social_profile"})
+
     def test_social_handle_must_match(self):
         self.assertTrue(website._handle_matches("anniogco", website.tokens("ANNI&CO AS"), []))
         self.assertFalse(website._handle_matches("webbyraaet", website.tokens("ANNI&CO AS"), []))
@@ -334,7 +398,13 @@ class BatchContractTests(unittest.TestCase):
             self.assertTrue(all(e["state"] in STATES for e in envs))
             self.assertTrue(rep["validation"]["passed"])
             self.assertTrue((Path(d) / "out" / "index.html").exists())
-            self.assertIn("Latest filed accounts (2025)", envs[0]["summary"]["text"])
+            self.assertIsInstance(envs[0]["summary"], str)
+            self.assertIn("Latest filed accounts (2025)", envs[0]["summary"])
+            syn = envs[0]["synthesis"]
+            self.assertEqual(syn["what_changed"]["status"], "first_observation")
+            self.assertTrue(syn["sources"] and all(src["url"].startswith("https://") for src in syn["sources"]))
+            self.assertRegex(envs[0]["summary"], r"\[\d+\]")  # inline citations
+            self.assertTrue(syn["what_remains_unknown"]["items"])
 
 
 if __name__ == "__main__":

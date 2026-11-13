@@ -12,6 +12,7 @@ import gzip
 import json
 import re
 import threading
+import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -76,7 +77,7 @@ class JobIndex:
             self._token = m.group(0)
         return self._token
 
-    def sync(self, client, bootstrap_days=100, max_pages=400, stop_seconds=None):
+    def sync(self, client, bootstrap_days=100, max_pages=400, stop_seconds=None, deadline=None):
         """Pull feed pages modified since the last sync (incremental)."""
         start = self.synced_until or (datetime.now(timezone.utc) - timedelta(days=bootstrap_days)).isoformat()
         since = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
@@ -85,7 +86,8 @@ class JobIndex:
         try:
             hdr = {"Authorization": f"Bearer {self.token(client)}", "If-Modified-Since": format_datetime(since, usegmt=True)}
             while pages < max_pages:
-                if stop_seconds is not None and client.time_left() < stop_seconds:
+                if (stop_seconds is not None and client.time_left() < stop_seconds) or \
+                        (deadline is not None and time.monotonic() > deadline):
                     self.sync_info["status"] = "partial_time_budget"
                     break
                 r = client.get(url, timeout=60, max_bytes=30_000_000, headers=hdr, retries=2)
@@ -121,7 +123,7 @@ class JobIndex:
         self._by_name = None
         return self.sync_info
 
-    def enrich(self, client, max_requests, workers=6, stop_seconds=None):
+    def enrich(self, client, max_requests, workers=6, stop_seconds=None, deadline=None):
         """Fetch ad details (newest first) to learn each active ad's employer org. no."""
         from concurrent.futures import ThreadPoolExecutor
         todo = sorted((a for a in self.ads.values() if a.get("status") == "ACTIVE" and not a.get("orgnr")),
@@ -130,6 +132,8 @@ class JobIndex:
 
         def one(ad):
             if stop_seconds is not None and client.time_left() < stop_seconds:
+                return
+            if deadline is not None and time.monotonic() > deadline:
                 return
             try:
                 r, d = self.detail(client, ad["uuid"])
@@ -154,6 +158,10 @@ class JobIndex:
         self.sync_info["details_fetched"] = done[0]
         self.sync_info["ads_without_orgnr"] = sum(1 for a in self.ads.values() if a.get("status") == "ACTIVE" and not a.get("orgnr"))
         return done[0]
+
+    def by_orgnr_map(self):
+        self.by_orgnr(())
+        return self._by_orgnr
 
     def by_orgnr(self, orgnrs):
         if getattr(self, "_by_orgnr", None) is None:

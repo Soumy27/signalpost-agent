@@ -66,7 +66,8 @@ PARKED = ("domain is for sale", "domain for sale", "domenet er til salgs", "huge
           "one.com - domene", "webhuset", "denne siden er under oppbygging", "be back soon", "we'll be back",
           "maintenance mode", "site is under maintenance", "nettsiden er under arbeid", "siden er under utvikling",
           "account suspended", "this account has been suspended", "website expired", "domain has expired",
-          "index of /", "plesk default page", "cpanel default page")
+          "index of /", "plesk default page", "cpanel default page", "roundcube", "webmail", "outlook web app",
+          "logg inn på e-post", "sign in to your account")
 SUBPAGES = {
     "contact": r"kontakt|contact|finn-oss|finn_oss|find-us|om-oss/kontakt",
     "about": r"om-oss|om_oss|omoss|about|hvem-er-vi|historie|selskapet|var-historie|who-we-are",
@@ -110,6 +111,20 @@ FALLBACK_PATHS = {"contact": ["/kontakt", "/kontakt-oss"], "about": ["/om-oss"]}
 def fold(text):
     t = (text or "").translate(str.maketrans({"ø": "o", "Ø": "O", "å": "a", "Å": "A", "æ": "ae", "Æ": "AE"}))
     return unicodedata.normalize("NFKD", t).encode("ascii", "ignore").decode().casefold()
+
+
+IDENTITY_STOP = {"as", "asa", "ans", "da", "enk", "iks", "sa", "sam", "sti", "nuf", "ab", "ltd", "limited", "inc", "plc",
+                 "the", "og", "and", "i", "av", "for", "til", "co", "a", "s", "ks", "ba", "sf"}
+
+
+GEO_WORDS = {"norge", "norway", "norwegian", "norsk", "nordic", "nordics", "norden", "scandinavia", "skandinavia"}
+
+
+def identity_tokens(text):
+    """Name tokens that must all appear on a site: descriptive words such as
+    'consulting', 'eiendom', 'holding' or 'norge' are kept, so a parent or
+    group brand ('Head Energy') never matches a subsidiary ('Head Energy Consulting AS')."""
+    return [t for t in re.findall(r"[a-z0-9]+", fold(text)) if t not in IDENTITY_STOP and len(t) > 1]
 
 
 def tokens(text):
@@ -166,13 +181,15 @@ def name_domains(legal_name):
         variants.append("".join(core))
     if len(core) >= 3 and len(core[0] + core[1]) >= 6:
         variants.append(core[0] + core[1])
+    if re.search(r"\b(as|asa)\s*$", raw.strip()) and variants and len(variants[0]) >= 4:
+        variants.append(variants[0] + "as")  # e.g. "Veseth AS" -> vesethas.no
     out = []
     for v in dict.fromkeys(variants):
         if len(v.replace("-", "")) >= 5 and not all(w in GENERIC for w in v.split("-")):
             out.append(f"https://{v}.no")
     if variants and len(variants[0]) >= 6:
         out.append(f"https://{variants[0]}.com")
-    return out[:5]
+    return out[:6]
 
 
 def resolves(host):
@@ -340,7 +357,7 @@ class Crawler:
         self.cap = per_company_requests
         self.used = 0
         self.robots = {}
-        self.core = tokens(ctx.get("name"))
+        self.core = identity_tokens(ctx.get("name"))
 
     def get(self, url, **kw):
         if self.used >= self.cap:
@@ -394,14 +411,15 @@ class Crawler:
         if m:
             return 1.0, "orgnr_on_site", (resp, snippet(html, m), "orgnr_regex_html_source")
         if not homepage:
-            if site.verification == "name_only_needs_corroboration":
-                corro = self.corroboration(text + " " + html[:200000])
+            if site.verification == "name_only_needs_corroboration" and host_of(site.pages[0][1].final_url).endswith(".no"):
+                corro = self.corroboration(text, page.links, strict=True)
                 if corro:
                     return 0.95, "legal_name_on_site", (resp, f"legal name on homepage; corroborated by {corro} on {resp.final_url}",
                                                         "legal_name_tokens+corroboration")
             return 0.0, None, None
         low = fold(" ".join([page.title, text[:4000]]))
-        if any(p in low for p in PARKED) or (len(text) < 60 and not page.structured()):
+        if any(p in low for p in PARKED) or (len(text) < 60 and not page.structured()) or \
+                re.search(r"/(roundcube|webmail|wp-login|login|logg-inn|signin)\b", urlparse(resp.final_url).path, re.I):
             return 0.1, "parked_or_empty", None
         others = set()
         for m in re.finditer(r"(?<!\d)([89]\d{2})[\s. ]?(\d{3})[\s. ]?(\d{3})(?!\d)", text):
@@ -424,44 +442,75 @@ class Crawler:
                           page.meta.get("application-name", ""), host_of(resp.final_url).replace("-", " ").replace(".", " "),
                           *names, *page.h1[:2]]
         core = set(self.core)
+        if site.origin in ("registry", "previously_verified") and len(core - GEO_WORDS) >= 1:
+            # the company's own register entry names this site: a missing country qualifier is not a mismatch
+            core = core - GEO_WORDS
         if not core:
             return 0.3, "no_distinctive_name_tokens", None
-        exact = any(core <= set(tokens(part)) for part in identity_parts if part)
+        exact = any(core <= set(identity_tokens(part)) for part in identity_parts if part)
         compact_host = fold(host_of(resp.final_url)).replace("-", "").replace(".", "")
-        if not exact and "".join(self.core) and "".join(self.core) in compact_host:
-            exact = True
+        if not exact and "".join(sorted(core, key=self.core.index)) in compact_host:
+            # the domain alone is not proof: the page must be a real site that names the company
+            named_in_page = core <= set(identity_tokens(text[:20000]))
+            exact = named_in_page and len(text) >= 300
         if exact and (len(core) >= 2 or len(text) >= 100):
-            corro = self.corroboration(text + " " + html[:200000])
-            if site.origin == "name_guess" and not corro:
+            guessed = site.origin == "name_guess"
+            if guessed and not host_of(resp.final_url).endswith(".no"):
+                # a guessed non-Norwegian domain is only accepted with the org. no. on the site
                 return 0.85, "name_only_needs_corroboration", None
-            span = next((p for p in identity_parts if p and core <= set(tokens(p))), page.title)
+            corro = self.corroboration(text, page.links, strict=guessed)
+            if guessed and not corro:
+                return 0.85, "name_only_needs_corroboration", None
+            span = next((p for p in identity_parts if p and core <= set(identity_tokens(p))), page.title)
             proof = (resp, f"identity text: {span[:160]}" + (f"; corroborated by {corro}" if corro else ""), "legal_name_tokens")
             return 0.95, "legal_name_on_site", proof
-        overlap = core & set(tokens(" ".join(identity_parts) + " " + text[:3000]))
+        overlap = core & set(identity_tokens(" ".join(identity_parts) + " " + text[:3000]))
         if len(overlap) / len(core) >= 0.5:
             return 0.6, "partial_name_match", None
         return 0.3, "name_not_found", None
 
-    def corroboration(self, text):
-        digits = re.sub(r"\D", "", text)
+    def corroboration(self, text, links=(), strict=False):
+        """Independent evidence tying a site to the registered entity, read from
+        visible text and tel:/mailto: links only (never scripts or markup)."""
+        link_text = " ".join(h for h, _ in links if h.lower().startswith(("tel:", "mailto:")))
+        hay = text + " " + link_text
+        numbers = set()
+        for m in re.finditer(r"(?<![\d])(?:\+?47[\s.-]?)?(\d(?:[\s.-]?\d){7})(?![\d])", hay):
+            numbers.add(re.sub(r"\D", "", m.group(1)))
         for ph in self.ctx.get("phones", []):
             d = re.sub(r"\D", "", ph)[-8:]
-            if len(d) == 8 and d in digits:
+            if len(d) == 8 and d in numbers:
                 return "registered phone number"
         addr = self.ctx.get("address") or {}
         street = fold((addr.get("adresse") or [""])[0]) if addr.get("adresse") else ""
-        ft = fold(text)
-        if addr.get("postnummer") and addr["postnummer"] in text and street and len(street) > 4 and street[:12] in ft:
+        ft = fold(hay)
+        if addr.get("postnummer") and re.search(r"(?<!\d)" + addr["postnummer"] + r"(?!\d)", hay) and street \
+                and len(street) > 4 and re.search(r"\b" + re.escape(street[:20].strip()) + r"\b", ft):
             return "registered street address and postcode"
-        if addr.get("postnummer") and addr.get("poststed") and re.search(
-                re.escape(addr["postnummer"]) + r"\s*,?\s*" + re.escape(fold(addr["poststed"])), ft):
-            return "registered postcode and city"
         for e in self.ctx.get("emails", []):
-            if e and e.lower() in text.lower():
+            if e and re.search(r"(?<![\w.])" + re.escape(e.lower()) + r"(?![\w])", hay.lower()):
                 return "registered e-mail address"
         for person in self.ctx.get("people", [])[:6]:
-            if len(person.split()) >= 2 and fold(person) in ft:
+            if len(person.split()) >= 2 and re.search(r"\b" + re.escape(fold(person)) + r"\b", ft):
                 return f"registered role holder ({person})"
+        # Norwegian registered company names are unique: the full legal name *with its legal form*
+        # (e.g. "Maleservice Nord AS") on a .no site ties it to this entity. A one-word name must also
+        # be accompanied by the registered town.
+        legal = self.ctx.get("name") or ""
+        m = re.fullmatch(r"(.+?)\s+(as|asa|sa|ans|da)", fold(legal).strip())
+        if m:
+            words = re.findall(r"[a-z0-9]+", m.group(1))
+            pat = r"\b" + r"[\s&.,'-]*".join(re.escape(w) for w in words) + r"\s+" + m.group(2) + r"\b"
+            if words and re.search(pat, ft):
+                town = fold(addr.get("poststed") or "") or fold(addr.get("kommune") or "")
+                codes = [c for c in self.ctx.get("postal_codes") or () if c]
+                town_ok = bool(town) and re.search(r"\b" + re.escape(town) + r"\b", ft) and (
+                    len(town) >= 5 or any(re.search(r"(?<!\d)" + c + r"(?!\d)", hay) for c in codes))
+                if len(identity_tokens(legal)) >= 2 or town_ok:
+                    return "full registered company name with legal form" + ("" if len(identity_tokens(legal)) >= 2 else " and registered town")
+        if not strict and addr.get("postnummer") and addr.get("poststed") and re.search(
+                r"(?<!\d)" + re.escape(addr["postnummer"]) + r"\s*,?\s*" + re.escape(fold(addr["poststed"])), ft):
+            return "registered postcode and city"
         return None
 
     # -- crawl -------------------------------------------------------------------------
@@ -537,6 +586,19 @@ class Crawler:
                     wr = self.get(api, timeout=8, retries=0)
                     if wr.status == 200 and wr.body[:1] == b"[":
                         site.pages.append(("wp_posts", wr, None))
+            except BudgetExceeded:
+                pass
+            except Exception:
+                pass
+        # open positions often live on a recruitment portal linked from the company's own site
+        portal = next((h for _, r, p in site.pages if p for h, _ in p.links
+                       if any(a in h.lower() for a in ATS_DOMAINS) and not is_job_ad_url(h, "")
+                       and reg_domain(host_of(h)) != reg_domain(host_of(resp.final_url))), None)
+        if portal and self.used < self.cap - 1:
+            try:
+                st, pr = self.fetch_html(portal.split("#")[0], timeout=8)
+                if st == "ok":
+                    site.pages.append(("portal", pr, parse(pr)))
             except BudgetExceeded:
                 pass
             except Exception:
@@ -628,6 +690,16 @@ def discover(client, ctx, budget=16):
 
 # ---- extraction from a verified site ------------------------------------------------------
 
+def norwegian_phone(raw):
+    """Canonical +47XXXXXXXX for a plausible Norwegian number, else None
+    (concatenated template numbers, placeholders and foreign numbers are dropped)."""
+    d = re.sub(r"[^\d+]", "", raw or "")
+    d = re.sub(r"^(\+47|0047)", "", d)
+    if d.startswith("+") or not re.fullmatch(r"[2-9]\d{7}", d) or len(set(d)) < 3 or d in ("12345678", "23456789"):
+        return None
+    return "+47" + d
+
+
 def _social(url):
     p = urlparse(url)
     h = (p.hostname or "").lower().removeprefix("www.").removeprefix("m.").removeprefix("no.")
@@ -642,13 +714,34 @@ def _social(url):
                 return None
             if platform == "youtube" and not re.match(r"(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)", path):
                 return None
-            handle = path.split("/")[1] if platform == "linkedin" and "/" in path else path.split("/")[0]
-            return platform, f"https://{'www.' if platform != 'x' else ''}{doms[0]}/{path.split('?')[0].rstrip('/')}", handle
+            parts = path.split("?")[0].split("/")
+            if platform == "linkedin" or (platform == "youtube" and not parts[0].startswith("@")):
+                root, handle = "/".join(parts[:2]), parts[1] if len(parts) > 1 else ""
+            else:
+                root, handle = parts[0], parts[0]
+            if platform == "facebook" and (handle in ("profile.php", "pages", "people", "watch", "media") or handle.isdigit()):
+                return None
+            if not handle:
+                return None
+            return platform, f"https://{'www.' if platform != 'x' else ''}{doms[0]}/{root}", handle
     return None
+
+
+VENDOR_HANDLES = {
+    "squarespace", "wix", "wixcom", "wixstudio", "shopify", "wordpress", "wordpressdotcom", "weebly", "godaddy", "jimdo",
+    "onecom", "one.com", "webflow", "hubspot", "mailchimp", "google", "googlemaps", "youtube", "facebook", "instagram",
+    "linkedin", "twitter", "x", "tiktok", "pinterest", "vimeo", "github", "elementor", "divi", "elegantthemes",
+    "themeforest", "envato", "yoast", "woocommerce", "wpengine", "strato", "domeneshop", "webhuset", "proisp", "mono",
+    "monosolutions", "24sevenoffice", "tripletex", "visma", "fiken", "uni", "vipps", "klarna", "stripe", "paypal",
+    "zendesk", "intercom", "tidio", "cookiebot", "cookieinformation", "sitebuilder", "123hjemmeside", "hjemmesider",
+    "webnode", "duda", "wixapps", "gmail", "apple", "microsoft", "meta", "share", "sharer", "home", "pages",
+}
 
 
 def _handle_matches(handle, name_tokens_list, brand_tokens):
     hc = fold(handle).replace("-", "").replace("_", "").replace(".", "")
+    if not hc or hc in VENDOR_HANDLES or any(hc.startswith(v) and len(v) >= 6 for v in VENDOR_HANDLES):
+        return False
     for toks in (name_tokens_list, brand_tokens):
         if toks and "".join(toks) and "".join(toks) in hc:
             return True
@@ -688,6 +781,11 @@ NEWS_PATH = re.compile(r"/(nyhet\w*|news|aktuelt|blogg?|artikler|artikkel|articl
 PLACEHOLDER = re.compile(r"(testinnlegg|test ?post|hello world|hei verden|sample|eksempel|lorem ipsum|untitled|uten tittel|"
                          r"\bnr\.? ?\d+$|^\W*$)", re.I)
 TRAILER = re.compile(r"\s*(les mer|lese mer|read more|view project|se mer|mer info)\b.*$", re.I)
+
+
+SPAM = re.compile(r"\b(casinos?|kasino|kasyn\\w*|kazino|bet(ting|s)?|1xbet|1xбет|mostbet|pin.?up|slots?|poker|gambling|viagra|cialis|"
+                  r"payday|porn\w*|escort|bitcoin|forex|replica|bonus codes?|free spins|vavada|aviator|jackpot|sportsbook)\b", re.I)
+NON_LATIN = re.compile(r"[\u0400-\u04FF\u0600-\u06FF\u0E00-\u0E7F\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF\u0590-\u05FF]")
 
 
 def clean_title(t):
@@ -755,10 +853,20 @@ def extract(L, site, ctx):
     dom = reg_domain(host_of(final))
     ev_proof = L.add_evidence(proof_resp, CO, proof_span, proof_method)
     conf = site.score
+    fpath = urlparse(final).path.strip("/").lower()
+    hosted_profile = bool(fpath) and not re.fullmatch(r"(no|nb|nn|en|en-gb|en-us|no-nb|index\.(html?|php)|home|hjem|forside|nyheter)", fpath) \
+        and not any(t in fold(host_of(final)).replace("-", "") for t in identity_tokens(ctx.get("name")))
     L.claim("website", "official_website", {"url": final, "domain": host_of(final), "found_via": site.origin,
                                             "identity_proof": site.verification},
             [ev_proof], confidence=conf, key=host_of(final))
 
+    if hosted_profile:
+        # e.g. sjekkpunkt.no/bilverksted/<company>: the page is the company's, the domain's contacts,
+        # social accounts, posts and jobs belong to the platform, so nothing else is published from it
+        for sname in ("social_profiles", "activity"):
+            L.section(sname, "not_available", "The company's website is a profile page on a shared platform "
+                      f"({host_of(final)}); the platform's own contacts, accounts and posts are not attributed to the company.")
+        return None
     structured = [d for _, r, p in site.pages if p for d in p.structured()]
     orgs = [d for d in structured if any(t in ORG_TYPES or t.endswith("business") for t in _types(d))]
 
@@ -774,6 +882,12 @@ def extract(L, site, ctx):
     brand = brand or home.meta.get("og:site_name")
     if brand and re.fullmatch(r"(https?://)?(www\.)?[\w.-]+\.[a-z]{2,}/?", brand.strip().lower()):
         brand = None  # a bare domain is not a brand name
+    if brand and fold(brand).replace(" ", "").replace(".", "") in VENDOR_HANDLES:
+        brand = None  # site-builder/platform name, not the company's brand
+    if brand and (fold(brand).strip() in {"default", "home", "hjem", "forside", "startside", "my site", "min side", "website",
+                                         "nettside", "hjemmeside", "untitled", "site", "welcome", "velkommen"}
+                  or set(tokens(brand)) <= set(tokens(ctx.get("name"))) or len(brand.split()) > 5 or len(brand) < 3):
+        brand = None  # template defaults, a fragment of the legal name or a tagline are not a brand
     if brand and len(brand) <= 80 and set(tokens(brand)) != set(tokens(ctx.get("name"))):
         L.claim("identity", "public_brand", brand, [ev_text(home_resp, f'site name: "{brand}"', "meta_or_jsonld")],
                 confidence=conf, note="Brand/trading name used on the verified company website")
@@ -811,13 +925,14 @@ def extract(L, site, ctx):
                 continue
             platform, url, handle = s
             declared = href.rstrip("/") in same_as
-            if not (declared or _handle_matches(handle, tokens(ctx.get("name")), brand_tokens)):
+            # the handle itself must name the company (template sameAs links are not trusted on their own)
+            if not _handle_matches(handle, tokens(ctx.get("name")), brand_tokens):
                 rejected += 1
                 continue
             if platform in seen_platforms:
                 continue
             seen_platforms[platform] = url
-            how = "declared in the site's structured data (sameAs)" if declared else "handle matches the company name"
+            how = "handle matches the company name" + (" and the site declares it in structured data (sameAs)" if declared else "")
             L.claim("social_profiles", "social_profile", {"platform": platform, "url": url, "handle": handle,
                                                           "linked_from": resp.final_url},
                     [ev_text(resp, f'link to {href}' + (f' ("{text}")' if text and text != "sameAs" else ""), "html_anchor", "a[href]")],
@@ -839,8 +954,8 @@ def extract(L, site, ctx):
                 if re.fullmatch(r"[^@\s]+@[^@\s]+\.[a-z]{2,}", e) and (reg_domain(e.split("@")[1]) == dom or e in [x.lower() for x in ctx["emails"]]):
                     emails.setdefault(e, (resp, href))
             elif href.lower().startswith("tel:"):
-                d = re.sub(r"[^\d+]", "", href[4:])
-                if len(re.sub(r"\D", "", d)) >= 8:
+                d = norwegian_phone(href[4:])
+                if d:
                     phones.setdefault(d, (resp, href))
     reg_emails = {x.lower() for x in ctx["emails"]}
     for e, (resp, href) in sorted(emails.items(), key=lambda kv: (kv[0] not in reg_emails, kv[0]))[:3]:
@@ -850,9 +965,10 @@ def extract(L, site, ctx):
         L.claim("contact", "website_phone", ph, [ev_text(resp, f"tel link: {href}", "html_anchor", "a[href^=tel]")],
                 confidence=conf, key=re.sub(r"\D", "", ph)[-8:])
     for d in orgs:
-        if isinstance(d.get("telephone"), str):
-            L.claim("contact", "website_phone", d["telephone"], [ev_text(home_resp, f'JSON-LD telephone: {d["telephone"]}', "jsonld")],
-                    confidence=conf, key=re.sub(r"\D", "", d["telephone"])[-8:])
+        if isinstance(d.get("telephone"), str) and norwegian_phone(d["telephone"]):
+            L.claim("contact", "website_phone", norwegian_phone(d["telephone"]),
+                    [ev_text(home_resp, f'JSON-LD telephone: {d["telephone"]}', "jsonld")], confidence=conf,
+                    key=norwegian_phone(d["telephone"])[-8:])
         if isinstance(d.get("email"), str):
             L.claim("contact", "website_email", d["email"].lower(), [ev_text(home_resp, f'JSON-LD email: {d["email"]}', "jsonld")],
                     confidence=conf, key=d["email"].lower())
@@ -890,7 +1006,9 @@ def extract(L, site, ctx):
         L.claim("jobs", "careers_portal", {"url": href, "provider": host}, [ev_text(resp, f'link to career portal {href}' + (f' ("{title}")' if title else ""), "html_anchor", "a[href]")],
                 confidence=min(conf, 0.9), key=host, note="Recruitment portal linked from the verified website")
     for href, (resp, title) in sorted(job_links.items())[:15]:
-        L.claim("jobs", "job_posting", {"title": title, "url": href, "source": "company website", "status": "listed"},
+        via = "company website" if reg_domain(host_of(resp.final_url)) == dom else \
+            f"recruitment portal {host_of(resp.final_url)} linked from the company website"
+        L.claim("jobs", "job_posting", {"title": title, "url": href, "source": via, "status": "listed"},
                 [ev_text(resp, f'job ad link "{title}" -> {href}', "html_anchor", "a[href]")], confidence=min(conf, 0.9), key=href)
 
     # dated activity: RSS/Atom, article markup and JSON-LD articles
@@ -952,7 +1070,14 @@ def extract(L, site, ctx):
                     items.setdefault(url, (resp, title, dt, "jsonld_article", f"JSON-LD {title} datePublished {dt}"))
     today = datetime.now(timezone.utc).date().isoformat()
     items = {k: (v[0], clean_title(v[1]), *v[2:]) for k, v in items.items()}
-    items = {k: v for k, v in items.items() if len(v[1]) >= 8 and not PLACEHOLDER.search(fold(v[1]))}
+    items = {k: v for k, v in items.items() if len(v[1]) >= 8 and not PLACEHOLDER.search(fold(v[1]))
+             and urlparse(k).path.strip("/") and k.split("#")[0].rstrip("/") != final.rstrip("/")}
+    if any(SPAM.search(v[1]) or NON_LATIN.search(v[1]) for v in items.values()):
+        # a site publishing gambling/pharma spam or foreign-script posts has been compromised:
+        # none of its feed is trusted as company activity
+        items = {}
+        L.section("activity", "not_available", "The verified website's post feed contains spam (likely a compromised site); "
+                  "no item from it is published.", checked=[final])
     recent = sorted(((k, v) for k, v in items.items() if cutoff <= v[2] <= today), key=lambda kv: kv[1][2], reverse=True)
     for url, (resp, title, date, method, span) in recent[:10]:
         L.claim("activity", "company_news", {"title": " ".join(title.split())[:200], "url": url, "date": date,
