@@ -3,7 +3,8 @@
 Phases (each bounded by the request/time budget):
   1. official registers for every company            (~4-6 requests each)
   2. NAV job-feed incremental sync                    (shared, a few pages)
-  3. website discovery + verified-site crawl          (budget-shared)
+  3. website discovery + verified-site crawl          (budget-shared; optional
+     search-API candidates when a key is set, see search.py)
   4. job-ad verification against employer org. no.    (budget-shared)
   5. synthesis, refresh diff, envelopes, report, HTML
 
@@ -18,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, agent, brreg, report, summary
+from . import __version__, agent, brreg, report, search, summary
 from .evidence import SECTIONS, STATES, Ledger
 from .http import Client
 from .jobs import JobIndex
@@ -177,6 +178,10 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
             ctx["employer_homepages"] = list(dict.fromkeys(a["homepage"] for a in ads if a.get("homepage")))[:2]
 
     # phase 3: website discovery + verified-site crawl
+    searcher = search.from_env(len(ok)) if web else None
+    if searcher:
+        searcher.reserve = max(300, minutes * 60 * 0.25)  # stop searching with a quarter of the run left
+        log(f"[search] {searcher.provider} enabled: <= {searcher.max_queries} queries, transient candidates only")
     if web:
         # fixed per-company page budget for the whole run (deterministic crawl => no false changes)
         share = max(4, min(web_budget, (client.remaining - 4 * len(ok)) // max(1, len(ok)) + 6))
@@ -186,7 +191,7 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
             if client.time_left() < 20 or client.remaining < 8:
                 L.section("website", "failed", "Run budget exhausted before the website could be checked.")
                 return
-            agent.research_web(client, L, ctx, budget=share)
+            agent.research_web(client, L, ctx, budget=share, searcher=searcher)
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for i, _ in enumerate(ex.map(p3, ok), 1):
                 if i % 100 == 0 or i == len(ok):
@@ -243,7 +248,7 @@ def run(input_path, out_dir="out", run_id=None, max_requests=None, minutes=None,
         envelopes.append(env)
     _write_jsonl(out / "envelopes.jsonl", envelopes)
 
-    rep = _report(envelopes, client, run_meta, n, t0, index if jobs else None, max_requests, minutes)
+    rep = _report(envelopes, client, run_meta, n, t0, index if jobs else None, max_requests, minutes, searcher)
     (out / "run-report.json").write_text(json.dumps(rep, ensure_ascii=False, indent=2), encoding="utf-8")
     with (out / "requests.log.jsonl").open("w", encoding="utf-8") as f:
         for u, s in client.log:
@@ -291,7 +296,7 @@ def _write_jsonl(path, rows):
     tmp.replace(path)
 
 
-def _report(envelopes, client, run_meta, n, t0, index, max_requests, minutes):
+def _report(envelopes, client, run_meta, n, t0, index, max_requests, minutes, searcher=None):
     states, sec = {}, {}
     for e in envelopes:
         states[e["state"]] = states.get(e["state"], 0) + 1
@@ -316,6 +321,7 @@ def _report(envelopes, client, run_meta, n, t0, index, max_requests, minutes):
         "every_published_claim_has_evidence": unsupported == 0,
         "evidence_has_hash_and_time": all(ev.get("content_sha256") and ev.get("retrieved_at") for e in envelopes for ev in e["evidence"]),
     }
+    cost = round(searcher.queries * searcher.cost_per_query, 4) if searcher else 0.0
     return {
         "run_id": run_meta["run_id"],
         "agent_version": __version__,
@@ -335,8 +341,9 @@ def _report(envelopes, client, run_meta, n, t0, index, max_requests, minutes):
             "p95_request_ms": lat[min(len(lat) - 1, int(len(lat) * 0.95))] if lat else None,
             "p50_company_ms": per[len(per) // 2] if per else None,
             "p95_company_ms": per[min(len(per) - 1, int(len(per) * 0.95))] if per else None,
-            "third_party_cost_usd": 0.0, "cost_per_company_usd": 0.0,
+            "third_party_cost_usd": cost, "cost_per_company_usd": round(cost / max(1, n), 5),
         },
+        "search": searcher.describe() if searcher else {"provider": None, "note": "no search key set; free sources only"},
         "job_feed": index.sync_info if index else None,
         "validation": {"passed": all(checks.values()), "checks": checks, "unsupported_claims": unsupported},
     }

@@ -16,6 +16,7 @@ The organisation number is the anchor. A brand, domain, social handle or job ad 
 3. The domain of the registered e-mail address, unless it is a free-mail or ISP domain (the list is in `website.py`).
 4. The employer homepage stated in a NAV job ad whose employer org. no. is this company.
 5. Up to five domains derived from the legal name (e.g. `ANNI&CO AS` gives `anniogco.no`, `anni-co.no` and so on). A guess is fetched only if the domain resolves in DNS.
+6. **Optional, only when a search key is supplied:** up to four domains from a search API. The queries are the name plus the registered town, then the organisation number. Directories, registries and social networks are dropped. Search output is never evidence; it is a candidate source with the same strictness as a name guess (5).
 
 ## Publication gate
 
@@ -23,10 +24,11 @@ The organisation number is the anchor. A brand, domain, social handle or job ad 
 |---|---|---|
 | The organisation number (any common formatting) appears on the homepage, contact or about page | 1.00 | yes, `orgnr_on_site` |
 | **Every** name token except legal suffixes and stop words (`AS`, `ASA`, `og`, `and`, …) appears together in the homepage's identity text (title, `og:site_name`, JSON-LD `Organization` name, host name, H1). Descriptive words such as *consulting*, *eiendom*, *holding* and *norge* must match too, so a group brand never matches a subsidiary | 0.95 | yes for candidates 1–4, `legal_name_on_site` |
-| As above, for a name-derived `.no` domain (5), **plus** independent corroboration read from visible text or `tel:`/`mailto:` links only (never scripts or markup): the registered phone number (whole number, digit boundaries), the registered street address with postcode, the registered e-mail, or a registered CEO or chair by full name | 0.95 | yes |
-| Name-derived domain that is **not** `.no` (e.g. `.com`) without the org. no. on the site | 0.85 | no, `ambiguous` |
-| Name-derived domain with a name match but no corroboration | 0.85 | no, `ambiguous` |
+| As above, for a name-derived or search `.no` domain (5, 6), **plus** independent corroboration read from visible text or `tel:`/`mailto:` links only (never scripts or markup): the registered phone number (whole number, digit boundaries), any registered street address with its postcode (business, location, postal or a registered workplace; never a P.O. box), the registered e-mail, or a registered role holder by full name (or first and last name when the register lists middle names) | 0.95 | yes |
+| Name-derived or search domain that is **not** `.no` (e.g. `.com`) without the org. no. on the site | 0.85 | no, `ambiguous` |
+| Name-derived or search domain with a name match but no corroboration | 0.85 | no, `ambiguous` |
 | Partial name overlap (≥ 50 % of tokens) | 0.60 | no, `ambiguous` |
+| A search-found page that lists two or more other labelled organisation numbers (a directory or list), checked **before** our own org. no. is looked for | 0.20 | no |
 | Another valid organisation number labelled `org.nr`/`MVA` on the page, and not one of this company's subunits | 0.20 | no; this is a parent, group, franchise or agency site |
 | Parked, for-sale, under-construction, hosting-default or empty page | 0.10 | no |
 | Business sports club (`BIL`) pointing to the operating company's site | 0.30 | no |

@@ -134,9 +134,10 @@ class Client:
             tmp.write_bytes(gzip.compress(resp.body, compresslevel=6))
             tmp.replace(p)
 
-    def get(self, url, timeout=15, retries=2, accept="application/json", max_bytes=None, headers=None):
+    def get(self, url, timeout=15, retries=2, accept="application/json", max_bytes=None, headers=None, data=None, store=True):
         """GET a URL. Returns a Response for any HTTP status. Raises BudgetExceeded,
-        or the last network error if every attempt failed."""
+        or the last network error if every attempt failed. `data` sends a POST body;
+        store=False keeps the body out of the snapshot store (transient search output)."""
         last_err = None
         max_bytes = max_bytes or self.max_bytes
         check_url(url)
@@ -146,7 +147,7 @@ class Client:
             opener = urllib.request.build_opener(redirects)
             hdrs = {"User-Agent": USER_AGENT, "Accept": accept, "Accept-Language": "nb-NO,nb;q=0.9,no;q=0.8,en;q=0.6"}
             hdrs.update(headers or {})
-            req = urllib.request.Request(url, headers=hdrs)
+            req = urllib.request.Request(url, headers=hdrs, data=data)
             t0 = time.monotonic()
             try:
                 with opener.open(req, timeout=timeout) as r:
@@ -177,7 +178,7 @@ class Client:
             if resp.status in (429, 500, 502, 503, 504) and attempt < retries:
                 time.sleep(1.0 * (attempt + 1))
                 continue
-            if resp.status < 400:
+            if resp.status < 400 and store:
                 self._store(resp)
             return resp
         raise last_err

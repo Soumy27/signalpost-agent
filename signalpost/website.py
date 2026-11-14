@@ -404,6 +404,10 @@ class Crawler:
         orgnr = self.ctx["orgnr"]
         html = resp.text()
         text = page.visible_text()
+        if site.origin == "search" and len(self.other_orgnrs(text)) >= 2:
+            # a search hit naming several other organisations is a directory or list, not the company's site
+            site.reasons.append("page lists several other organisation numbers")
+            return 0.2, "directory_or_multi_company_page", None
         m = orgnr_mod.pattern(orgnr).search(text)
         if m:
             return 1.0, "orgnr_on_site", (resp, snippet(text, m), "orgnr_regex_visible_text")
@@ -421,12 +425,7 @@ class Crawler:
         if any(p in low for p in PARKED) or (len(text) < 60 and not page.structured()) or \
                 re.search(r"/(roundcube|webmail|wp-login|login|logg-inn|signin)\b", urlparse(resp.final_url).path, re.I):
             return 0.1, "parked_or_empty", None
-        others = set()
-        for m in re.finditer(r"(?<!\d)([89]\d{2})[\s. ]?(\d{3})[\s. ]?(\d{3})(?!\d)", text):
-            cand = "".join(m.groups())
-            if cand != orgnr and orgnr_mod.is_valid(cand) and cand not in self.ctx["subunit_orgnrs"] and \
-                    re.search(r"(org|mva|foretaks|vat)", text[max(0, m.start() - 40):m.start()], re.I):
-                others.add(cand)
+        others = self.other_orgnrs(text)
         if others:
             site.reasons.append(f"another organisation number on site: {sorted(others)[:3]}")
             return 0.2, "different_orgnr_on_site", None
@@ -454,7 +453,7 @@ class Crawler:
             named_in_page = core <= set(identity_tokens(text[:20000]))
             exact = named_in_page and len(text) >= 300
         if exact and (len(core) >= 2 or len(text) >= 100):
-            guessed = site.origin == "name_guess"
+            guessed = site.origin in GUESSED
             if guessed and not host_of(resp.final_url).endswith(".no"):
                 # a guessed non-Norwegian domain is only accepted with the org. no. on the site
                 return 0.85, "name_only_needs_corroboration", None
@@ -469,6 +468,16 @@ class Crawler:
             return 0.6, "partial_name_match", None
         return 0.3, "name_not_found", None
 
+    def other_orgnrs(self, text):
+        """Valid organisation numbers labelled org.nr/MVA on the page that are neither this company nor its subunits."""
+        orgnr, others = self.ctx["orgnr"], set()
+        for m in re.finditer(r"(?<!\d)([89]\d{2})[\s. ]?(\d{3})[\s. ]?(\d{3})(?!\d)", text):
+            cand = "".join(m.groups())
+            if cand != orgnr and orgnr_mod.is_valid(cand) and cand not in self.ctx["subunit_orgnrs"] and \
+                    re.search(r"(org|mva|foretaks|vat)", text[max(0, m.start() - 40):m.start()], re.I):
+                others.add(cand)
+        return others
+
     def corroboration(self, text, links=(), strict=False):
         """Independent evidence tying a site to the registered entity, read from
         visible text and tel:/mailto: links only (never scripts or markup)."""
@@ -482,16 +491,28 @@ class Crawler:
             if len(d) == 8 and d in numbers:
                 return "registered phone number"
         addr = self.ctx.get("address") or {}
-        street = fold((addr.get("adresse") or [""])[0]) if addr.get("adresse") else ""
         ft = fold(hay)
-        if addr.get("postnummer") and re.search(r"(?<!\d)" + addr["postnummer"] + r"(?!\d)", hay) and street \
-                and len(street) > 4 and re.search(r"\b" + re.escape(street[:20].strip()) + r"\b", ft):
-            return "registered street address and postcode"
+        # business, location and postal address, plus every registered workplace (subunit)
+        addrs = list(self.ctx.get("addresses") or [])
+        if addr.get("adresse") and addr.get("postnummer"):
+            addrs.insert(0, (addr["adresse"][0], addr["postnummer"]))
+        for street_raw, postnr in addrs:
+            street = fold(street_raw or "")
+            if postnr and len(street) > 4 and not re.match(r"(postboks|pb\b|boks)", street) \
+                    and re.search(r"(?<!\d)" + re.escape(postnr) + r"(?!\d)", hay) \
+                    and re.search(r"\b" + re.escape(street[:20].strip()) + r"\b", ft):
+                return "registered street address and postcode"
         for e in self.ctx.get("emails", []):
             if e and re.search(r"(?<![\w.])" + re.escape(e.lower()) + r"(?![\w])", hay.lower()):
                 return "registered e-mail address"
         for person in self.ctx.get("people", [])[:6]:
-            if len(person.split()) >= 2 and re.search(r"\b" + re.escape(fold(person)) + r"\b", ft):
+            parts = person.split()
+            if len(parts) < 2:
+                continue
+            forms = [person]
+            if len(parts) >= 3 and len(parts[0]) >= 3 and len(parts[-1]) >= 3:
+                forms.append(f"{parts[0]} {parts[-1]}")  # registered middle names are often left out
+            if any(re.search(r"\b" + re.escape(fold(f)) + r"\b", ft) for f in forms):
                 return f"registered role holder ({person})"
         # Norwegian registered company names are unique: the full legal name *with its legal form*
         # (e.g. "Maleservice Nord AS") on a .no site ties it to this entity. A one-word name must also
@@ -650,8 +671,12 @@ class Crawler:
         return {k: v[1] for k, v in best.items()}
 
 
-def discover(client, ctx, budget=16):
-    """Try candidate sites in order; return (verified SiteResult or None, attempts)."""
+GUESSED = ("name_guess", "search")  # candidates with no tie to the register: strictest gate
+
+
+def discover(client, ctx, budget=16, searcher=None):
+    """Try candidate sites in order; return (verified SiteResult or None, attempts, crawler).
+    Search (optional, transient) runs only when no free candidate verified."""
     cr = Crawler(client, ctx, budget)
     candidates = []
     prev = normalize_url(ctx.get("previous_website"))
@@ -685,6 +710,21 @@ def discover(client, ctx, budget=16):
             return site, attempts, cr
         if origin == "registry" and site.verification in ("different_orgnr_on_site",):
             continue
+    if searcher is not None and not any(a.origin in ("registry", "previously_verified") and a.score >= 0.2 for a in attempts):
+        from . import search
+        try:
+            for q in search.queries(ctx):
+                for url in search.candidate_urls(searcher.search(client, q)):
+                    key = reg_domain(host_of(url))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    site = cr.try_site(url, "search")
+                    attempts.append(site)
+                    if site.score >= 0.9:
+                        return site, attempts, cr
+        except BudgetExceeded:
+            pass
     return None, attempts, cr
 
 

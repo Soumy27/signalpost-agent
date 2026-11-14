@@ -193,6 +193,50 @@ class WebsiteTests(unittest.TestCase):
             s = cr.try_site("https://head.energy", "registry_email_domain")
         self.assertLess(s.score, 0.9)
 
+    def test_search_candidates_are_gated_like_guesses(self):
+        """Search output only proposes domains: directories are dropped, a name-only match is not
+        published, and the site with the org. no. in its footer is."""
+        from signalpost import search
+
+        class FakeSearcher:
+            queries = 0
+
+            def search(self, client, q):
+                self.queries += 1
+                return ["https://www.proff.no/selskap/anni-co-as/jessheim/997874234",
+                        "https://www.facebook.com/anniogco", "https://jessheim-klaer.no/om", "https://anniogcobutikk.no/"]
+        ctx = dict(CTX, name="ANNI&CO AS", phones=[], emails=[], people=[], registry_website=None)
+        filler = "Klær og tilbehør for alle anledninger. " * 5
+        pages = {"https://jessheim-klaer.no": (200, f"<title>Anni &amp; Co</title><p>{filler}</p>"),
+                 "https://anniogcobutikk.no": (200, f"<title>Anni &amp; Co butikk</title><p>{filler} Org.nr 997 874 234</p>")}
+        self.assertEqual(search.candidate_urls(FakeSearcher().search(None, "")),
+                         ["https://jessheim-klaer.no", "https://anniogcobutikk.no"])
+        with mock.patch.object(website, "resolves", side_effect=lambda h: "anni" in h and "butikk" in h or h.startswith("jessheim")):
+            site, attempts, _ = website.discover(FakeClient(pages), ctx, 30, searcher=FakeSearcher())
+        self.assertIsNotNone(site)
+        self.assertEqual((site.origin, site.verification), ("search", "orgnr_on_site"))
+        self.assertIn(("search", "name_only_needs_corroboration"), [(a.origin, a.verification) for a in attempts])
+        # without a key the module is off
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(search.from_env(10))
+        self.assertTrue(search.queries({"name": "ANNI&CO AS", "orgnr": ORG, "address": {"poststed": "JESSHEIM"}})[1]
+                        .startswith('"997 874 234"'))
+
+    def test_search_hit_listing_many_companies_is_a_directory(self):
+        page = ("<title>Bedrifter på Jessheim</title><p>" + "Liste over firma. " * 10 +
+                "ANNI&amp;CO AS org.nr 997 874 234. Kiwi Jessheim org.nr 923 609 016. Nille AS org.nr 811 997 862.</p>")
+        s = crawl({"https://firmaer-jessheim.no": (200, page)}, origin="search", url="https://firmaer-jessheim.no")
+        self.assertEqual(s.verification, "directory_or_multi_company_page")
+        s = crawl({"https://firmaer-jessheim.no": (200, page)}, origin="registry", url="https://firmaer-jessheim.no")
+        self.assertEqual(s.verification, "orgnr_on_site")  # unchanged for the company's own registered site
+
+    def test_corroboration_by_role_holder_without_middle_name_and_workplace_address(self):
+        cr = website.Crawler(FakeClient({}), dict(CTX, phones=[], people=["Stig Bertelsen Fardal"],
+                                                    addresses=[("Industrivegen 4", "4365")]), 20)
+        self.assertIn("role holder", cr.corroboration("Daglig leder Stig Fardal svarer gjerne."))
+        self.assertIn("street address", cr.corroboration("Besøk oss: Industrivegen 4, 4365 Nærbø"))
+        self.assertIsNone(cr.corroboration("Kontakt Stig eller Fardal på Industrivegen 5, 4365 Nærbø"))
+
     def test_guessed_foreign_domain_needs_orgnr(self):
         home = "<title>Anni &amp; Co</title><p>Welcome to our cafe. Call 63 96 57 30 for a table. " * 4 + "</p>"
         s = crawl({"https://anniogco.com": (200, home)}, origin="name_guess", url="https://anniogco.com")

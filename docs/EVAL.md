@@ -53,7 +53,7 @@ An earlier version showed 22 false changes on the same test. They came from run 
 
 ## Coverage and cost (100-company runs)
 
-Submitted smoke run, version 2.1 (`smoke/run-report.json`): 100/100 envelopes, 7,819 published claims, 1,592 requests (including the job-feed catch-up), 226 s, $0. The immediate refresh run (`smoke/refresh-run-report.json`) reported 0 changes. Section availability: identity, financials, leadership and locations 100 %, verified website 12 %, contact 39 %, group 10 % (all in-group companies), social profiles 5 %, hiring 2 %, dated activity 3 %. These are lower than in version 2.0 by design: the stricter identity rules withhold anything that cannot be tied to the exact company. Typical figures from the validation set:
+Submitted smoke run, version 2.2 without a search key (`smoke/run-report.json`): 100/100 envelopes, 7,819 published claims, 750 requests, 347 s, $0. The immediate refresh run (`smoke/refresh-run-report.json`) reported 0 changes. Section availability: identity, financials, leadership and locations 100 %, verified website 12 %, contact 39 %, group 10 % (all in-group companies), social profiles 5 %, hiring 2 %, dated activity 3 %. These are lower than in version 2.0 by design: the stricter identity rules withhold anything that cannot be tied to the exact company. Typical figures from the validation set:
 
 | Section | Available |
 |---|---|
@@ -70,21 +70,23 @@ About 6–12 requests per company, 1.5–3 minutes per 100 companies, $0 third-p
 
 ## Scale test (1,000 companies, official batch size)
 
-A random sample of 1,000 companies from the universe (seed 31) was run with the default budgets (30,000 requests / 45 minutes).
+Two random samples of 1,000 companies from the universe, both run with the default budgets (30,000 requests / 45 minutes) and no search key.
 
-| Metric | Result |
-|---|---|
-| Envelopes | 1,000 / 1,000, validation passed |
-| Runtime | 851 s (14.2 min) |
-| Requests | 6,686 (6.7 per company); p50 1.05 s / p95 3.96 s per request |
-| Published claims | 77,265 |
-| Third-party cost | $0 |
-| Verified website / ambiguous (withheld) | 13.0 % / 13.9 % |
-| Contact, social, hiring, dated activity | 41.8 %, 6.6 %, 2.3 %, 2.4 % |
-| Group (companies the register marks as in a group) | 75 available, all others `not_applicable` |
+| Metric | v2.0 (seed 31) | v2.1 (seed 1114) |
+|---|---|---|
+| Envelopes | 1,000 / 1,000, validation passed | 1,000 / 1,000, validation passed |
+| Runtime | 851 s (14.2 min) | 728 s (12.1 min) |
+| Requests | 6,686 (6.7 per company) | 10,094 (10.1 per company, including the job-feed catch-up) |
+| p50 / p95 per request | 1.05 s / 3.96 s | 0.83 s / 1.81 s |
+| Published claims | 77,265 | 76,813 |
+| Third-party cost | $0 | $0 |
+| Verified website / ambiguous (withheld) | 13.0 % / 13.9 % | 13.8 % / 11.5 % |
+| Contact, social, hiring, dated activity | 41.8 %, 6.6 %, 2.3 %, 2.4 % | 39.7 %, 6.0 %, 1.9 %, 2.0 % |
 
-Four companies first came back `failed` because Brønnøysund reset connections under load. After this run, secondary register lookups were isolated per section, retries got exponential back-off, and a final retry pass was added. Re-running those four gave `available` for all of them.
+In the v2.1 run, 87 of the 115 withheld sites were name-derived domains that matched the name but had no corroboration. A hand check of a sample shows why they stay withheld. *kulltangen.no* belongs to Kulltangen Regnskap, a different firm from Kulltangen AS. Several others resolve to a registrar's parking server. Some, such as *jaerkraft.no*, are probably correct but show no registered phone, address, e-mail or role holder. The 18 website sections marked `failed` are registry-listed sites that were down or returned 429/5xx during the run.
+
+In the v2.0 run, four companies first came back `failed` because Brønnøysund reset connections under load. After this run, secondary register lookups were isolated per section, retries got exponential back-off, and a final retry pass was added. Re-running those four gave `available` for all of them.
 
 ## Tests
 
-`python3 -m unittest discover tests` runs the offline suite with no network. It covers MOD11, JSON-pointer evidence, verbatim financials with periods, rejection of foreign account rows, no silent zeros, identity mismatch, the snapshot fallback, every website gate, social handle checks, the job-ad URL rule, refresh idempotency, typed changes, stale carry-forward, two-miss removal, the outbound URL policy, and one envelope per input (including invalid and unknown numbers).
+`python3 -m unittest discover tests` runs the offline suite with no network. It covers MOD11, JSON-pointer evidence, verbatim financials with periods, rejection of foreign account rows, no silent zeros, identity mismatch, the snapshot fallback, every website gate, search candidates gated like name guesses (directories dropped, name-only rejected, org. no. accepted), corroboration without middle names and by workplace address, social handle checks, the job-ad URL rule, refresh idempotency, typed changes, stale carry-forward, two-miss removal, the outbound URL policy, and one envelope per input (including invalid and unknown numbers).

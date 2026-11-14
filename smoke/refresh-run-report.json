@@ -1,8 +1,8 @@
 {
-  "run_id": "smoke-round2-002-refresh",
-  "agent_version": "2.1.0",
-  "started_at": "2026-11-13T17:28:43Z",
-  "completed_at": "2026-11-13T17:32:32Z",
+  "run_id": "smoke-v2.2-002",
+  "agent_version": "2.2.0",
+  "started_at": "2026-11-14T07:26:57Z",
+  "completed_at": "2026-11-14T07:30:42Z",
   "expected_count": 100,
   "emitted_envelopes": 100,
   "states": {
@@ -53,37 +53,41 @@
   "published_claims": 7819,
   "claims_by_section": {
     "identity": 2413,
-    "contact": 85,
+    "contact": 81,
     "leadership": 460,
     "locations": 218,
     "financials": 4562,
     "website": 23,
     "social_profiles": 7,
-    "jobs": 5,
+    "jobs": 9,
     "group": 28,
     "activity": 18
   },
   "changes_detected": 0,
   "operations": {
-    "requests": 1584,
+    "requests": 689,
     "request_budget": 3000,
     "time_budget_minutes": 45,
-    "bytes": 21238932,
-    "runtime_seconds": 229.9,
-    "p50_request_ms": 1718,
-    "p95_request_ms": 1862,
-    "p50_company_ms": 10215,
-    "p95_company_ms": 41533,
+    "bytes": 16051720,
+    "runtime_seconds": 225.6,
+    "p50_request_ms": 1034,
+    "p95_request_ms": 3357,
+    "p50_company_ms": 8861,
+    "p95_company_ms": 34438,
     "third_party_cost_usd": 0.0,
     "cost_per_company_usd": 0.0
+  },
+  "search": {
+    "provider": null,
+    "note": "no search key set; free sources only"
   },
   "job_feed": {
     "pages": 1,
     "status": "complete",
-    "synced_until": "2026-11-13T18:23:46.779671+01:00",
-    "active_ads": 10105,
-    "details_fetched": 900,
-    "ads_without_orgnr": 3251
+    "synced_until": "2026-11-14T08:19:03.115622+01:00",
+    "active_ads": 9845,
+    "details_fetched": 1,
+    "ads_without_orgnr": 0
   },
   "validation": {
     "passed": true,

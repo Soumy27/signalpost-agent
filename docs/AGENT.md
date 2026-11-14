@@ -1,7 +1,7 @@
 # Research and abstention policy
 
 1. **Anchor.** Fetch the entity from Enhetsregisteret and confirm the organisation number in the response. Only then fetch roles, subunits, annual accounts and, when the register says the entity is in a group, the group structure.
-2. **Resolve the public identity.** Generate website candidates (register URL, e-mail domain, job-ad homepage, name-derived domains) and pass each through the publication gate in [IDENTITY_RESOLUTION.md](IDENTITY_RESOLUTION.md). Stop at the first exact match.
+2. **Resolve the public identity.** Generate website candidates (register URL, e-mail domain, job-ad homepage, name-derived domains and, only when a key is supplied, search-API candidates) and pass each through the publication gate in [IDENTITY_RESOLUTION.md](IDENTITY_RESOLUTION.md). Stop at the first exact match.
 3. **Crawl deterministically.** On a verified site, read the homepage and a few targeted pages. Extract in layers: structured data (JSON-LD, OpenGraph, RSS) first, then DOM attributes (`mailto:`, `tel:` and link targets), then dated text patterns. There is no model extraction and no browser rendering.
 4. **Hiring.** Match NAV job ads by exact employer org. no. (the company or its subunits), and add job-ad links found on the verified site.
 5. **Synthesise.** Build the summary only from published claims. Each sentence lists its supporting claim ids, and the summary states what remains unknown.

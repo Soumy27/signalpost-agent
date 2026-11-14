@@ -101,7 +101,7 @@ def collect(client, L, orgnr, bulk=None):
     """Fill ledger L with official claims. Returns a context dict used by the
     web and jobs modules (identity anchors)."""
     ctx = {"orgnr": orgnr, "kind": None, "names": [], "subunit_orgnrs": set(), "people": [],
-           "phones": [], "emails": [], "address": None, "postal_codes": set()}
+           "phones": [], "emails": [], "address": None, "postal_codes": set(), "addresses": []}
     try:
         kind, data, r = brreg.fetch_entity(client, orgnr)
     except Exception as e:
@@ -168,6 +168,8 @@ def collect(client, L, orgnr, bulk=None):
     for a in (data.get("forretningsadresse"), data.get("beliggenhetsadresse"), data.get("postadresse")):
         if a and a.get("postnummer"):
             ctx["postal_codes"].add(a["postnummer"])
+            if a.get("adresse"):
+                ctx["addresses"].append((a["adresse"][0], a["postnummer"]))
     if main.get("kommune"):
         ptr = "/forretningsadresse/kommune" if data.get("forretningsadresse") else "/beliggenhetsadresse/kommune"
         c("identity", "municipality", ptr, value={"name": main.get("kommune"), "number": main.get("kommunenummer")})
@@ -321,6 +323,9 @@ def _subunits(client, L, orgnr, ctx):
         if u.get("navn"):
             ctx["names"].append(u["navn"])
         a = _addr(u.get("beliggenhetsadresse"))
+        ba = u.get("beliggenhetsadresse") or {}
+        if ba.get("adresse") and ba.get("postnummer"):
+            ctx.setdefault("addresses", []).append((ba["adresse"][0], ba["postnummer"]))
         L.claim("locations", "registered_workplace", {
             "orgnr": u.get("organisasjonsnummer"), "name": u.get("navn"), "address": a["text"] if a else None,
             "municipality": (u.get("beliggenhetsadresse") or {}).get("kommune"),
