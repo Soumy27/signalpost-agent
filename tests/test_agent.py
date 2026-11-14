@@ -222,6 +222,25 @@ class WebsiteTests(unittest.TestCase):
         self.assertTrue(search.queries({"name": "ANNI&CO AS", "orgnr": ORG, "address": {"poststed": "JESSHEIM"}})[1]
                         .startswith('"997 874 234"'))
 
+    def test_search_rate_follows_the_keys_plan(self):
+        """Brave's rate-limit headers raise the default 1 query/s to the plan's limit (capped)
+        and stop the run before the monthly allowance is spent; an explicit QPS is kept."""
+        from signalpost import search
+        s = search.Searcher("brave", "k", qps=1.0, max_queries=2000, adaptive=True)
+        s.queries = 10
+        s._adapt({"X-RateLimit-Limit": "50, 20000000", "X-RateLimit-Remaining": "49, 300"})
+        self.assertAlmostEqual(s.interval, 1 / 20)
+        self.assertEqual(s.max_queries, 310)
+        s._adapt({"x-ratelimit-limit": "1, 2000"})  # lower-case header names, free plan
+        self.assertAlmostEqual(s.interval, 1.0)
+        fixed = search.Searcher("brave", "k", qps=2.0, adaptive=False)
+        fixed._adapt({"X-RateLimit-Limit": "50, 20000000"})
+        self.assertAlmostEqual(fixed.interval, 0.5)
+        with mock.patch.dict("os.environ", {"BRAVE_SEARCH_API_KEY": "k"}, clear=True):
+            self.assertTrue(search.from_env(10).adaptive)
+        with mock.patch.dict("os.environ", {"BRAVE_SEARCH_API_KEY": "k", "SIGNALPOST_SEARCH_QPS": "3"}, clear=True):
+            self.assertFalse(search.from_env(10).adaptive)
+
     def test_search_hit_listing_many_companies_is_a_directory(self):
         page = ("<title>Bedrifter på Jessheim</title><p>" + "Liste over firma. " * 10 +
                 "ANNI&amp;CO AS org.nr 997 874 234. Kiwi Jessheim org.nr 923 609 016. Nille AS org.nr 811 997 862.</p>")

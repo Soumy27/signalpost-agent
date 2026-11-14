@@ -17,6 +17,10 @@ discarded before any fetch.
 Rate and volume are bounded per run:
     SIGNALPOST_SEARCH_QPS          queries per second (default 1, the Brave free-tier limit)
     SIGNALPOST_SEARCH_MAX_QUERIES  queries per run    (default 2 per company)
+
+Without SIGNALPOST_SEARCH_QPS, the Brave rate follows the key's plan: the per-second limit in
+the X-RateLimit-Limit response header (capped at 20/s), and the run stops querying before the
+key's monthly allowance in X-RateLimit-Remaining runs out.
 """
 import json
 import os
@@ -75,8 +79,11 @@ def excluded(url):
 
 
 class Searcher:
-    def __init__(self, provider, key, qps=1.0, max_queries=2000):
+    MAX_QPS = 20.0
+
+    def __init__(self, provider, key, qps=1.0, max_queries=2000, adaptive=False):
         self.provider, self.key = provider, key
+        self.adaptive = adaptive  # follow the provider's rate-limit headers (no explicit QPS set)
         self.interval = 1.0 / max(0.05, qps)
         self.max_queries = max_queries
         self.queries = 0
@@ -91,6 +98,7 @@ class Searcher:
 
     def describe(self):
         return {"provider": self.provider, "queries": self.queries, "errors": self.errors,
+                "qps": round(1.0 / self.interval, 2),
                 "estimated_cost_usd": round(self.queries * self.cost_per_query, 4),
                 "max_queries": self.max_queries, "disabled": self.disabled,
                 "storage": "transient: candidate domains only; results are not stored or cited"}
@@ -109,6 +117,20 @@ class Searcher:
         if start > now:
             time.sleep(start - now)
         return True
+
+    def _adapt(self, headers):
+        """Brave reports `X-RateLimit-Limit: <per second>, <per month>` and the same shape in
+        `X-RateLimit-Remaining`. Raise the rate to the plan's limit; stop before the monthly quota."""
+        h = {k.lower(): v for k, v in (headers or {}).items()}
+
+        def nums(name):
+            return [int(x) for x in re.findall(r"\d+", h.get(name, ""))]
+        limit, remaining = nums("x-ratelimit-limit"), nums("x-ratelimit-remaining")
+        with self._lock:
+            if self.adaptive and limit and limit[0] > 0:
+                self.interval = 1.0 / min(self.MAX_QPS, float(limit[0]))
+            if len(remaining) >= 2:
+                self.max_queries = min(self.max_queries, self.queries + remaining[1])
 
     def search(self, client, query):
         """Result URLs (most relevant first), or [] when skipped or failed."""
@@ -138,6 +160,8 @@ class Searcher:
             with self._lock:
                 self.errors += 1
             return []
+        if self.provider == "brave":
+            self._adapt(r.headers)
         if r.status in (401, 403):
             self.disabled = f"provider rejected the key (http {r.status})"
         elif r.status != 200:
@@ -150,9 +174,10 @@ def from_env(n_companies=1000):
     for provider in ("brave", "serper", "tavily"):
         key = (os.environ.get(ENV[provider]) or "").strip()
         if key:
-            qps = float(os.environ.get("SIGNALPOST_SEARCH_QPS") or (1.0 if provider == "brave" else 5.0))
+            fixed = os.environ.get("SIGNALPOST_SEARCH_QPS")
+            qps = float(fixed or (1.0 if provider == "brave" else 5.0))
             cap = int(os.environ.get("SIGNALPOST_SEARCH_MAX_QUERIES") or 2 * max(1, n_companies))
-            return Searcher(provider, key, qps=qps, max_queries=cap)
+            return Searcher(provider, key, qps=qps, max_queries=cap, adaptive=not fixed)
     return None
 
 
